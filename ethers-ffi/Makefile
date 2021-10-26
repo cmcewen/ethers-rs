@@ -3,14 +3,14 @@
 NAME = libethers_ffi
 LIB = $(NAME).a
 SO = $(NAME).so
-ARCHS_IOS = x86_64-apple-ios
+ARCHS_IOS = x86_64-apple-ios aarch64-apple-ios
 ARCHS_ANDROID = aarch64-linux-android armv7-linux-androideabi arm-linux-androideabi i686-linux-android x86_64-linux-android
 NDK_STANDALONE = ./NDK
 ANDROID_DEST = ./react-native/android/app/src/main/jniLibs
-IOS_DEST = ./react-native/ios
+IOS_DEST = ./ios
 CARGO_PARAMS = --no-default-features
 
-TARGET_DIR = ./target
+TARGET_DIR = ../target
 
 all: android ios
 
@@ -80,3 +80,4 @@ $(ARCHS_IOS): %:
 $(LIB): $(ARCHS_IOS)
 	mkdir -p $(IOS_DEST)
 	lipo -create -output $(IOS_DEST)/$@ $(foreach arch,$(ARCHS_IOS),$(wildcard $(TARGET_DIR)/$(arch)/release/$(LIB)))
+	cbindgen --config cbindgen.toml --crate ethers-ffi --output $(IOS_DEST)/libethers_ffi.h

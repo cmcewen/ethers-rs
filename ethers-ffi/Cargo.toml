@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 ethers-core = { version = "^0.5.0", path = "../ethers-core", features = ["eip712"]}
-ethers-signers = { version = "^0.5.0", path = "../ethers-signers"}
+ethers-signers = { version = "^0.5.0", path = "../ethers-signers", default-features = false }
 libc= { version = "0.2.104" }
 serde_json = { version = "1.0.64", default-features = false }
 opaque-pointer = "0.8.5"
