@@ -517,9 +517,7 @@ dependencies = [
 
 [[package]]
 name = "coins-bip32"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01b669993c632e5fec4a297085ec57381f53e4646c123cb77a7ca754e005c921"
+version = "0.3.1"
 dependencies = [
  "bincode",
  "bs58",
@@ -1067,10 +1065,14 @@ version = "0.5.3"
 dependencies = [
  "cargo-lipo",
  "cbindgen",
+ "coins-bip32",
+ "coins-bip39",
  "ethers-core",
  "ethers-signers",
+ "k256",
  "libc",
  "opaque-pointer",
+ "rand 0.8.4",
  "serde_json",
 ]
 

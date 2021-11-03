@@ -23,6 +23,10 @@ ethers-signers = { version = "^0.5.0", path = "../ethers-signers", default-featu
 libc= { version = "0.2.104" }
 serde_json = { version = "1.0.64", default-features = false }
 opaque-pointer = "0.8.5"
+rand = "0.8.4"
+coins-bip32 = '0.3.1'
+coins-bip39 = '0.3.0'
+k256 = {version = '0.9.6', features = ['ecdsa']}
 
 [dev-dependencies]
 cargo-lipo = ">=1.0.3"
