@@ -13,6 +13,7 @@ use libc::c_char;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::str::FromStr;
+use ffi_convert::*;
 
 const DEFAULT_DERIVATION_PATH_PREFIX: &str = "m/44'/60'/0'/0/";
 
@@ -27,10 +28,17 @@ fn verifying_key_to_address(key: VerifyingKey) -> Address {
   Address::from_slice(&hash[12..])
 }
 
-#[repr(C)]
 pub struct PrivateKey {
-  private_key: *mut c_char,
-  address: *mut c_char,
+  private_key: String,
+  address: String,
+}
+
+#[repr(C)]
+#[derive(CReprOf, AsRust, CDrop)]
+#[target_type(PrivateKey)]
+pub struct CPrivateKey {
+  private_key: *const c_char,
+  address: *const c_char,
 }
 
 #[no_mangle]
@@ -48,7 +56,7 @@ pub extern "C" fn generate_mnemonic() -> *mut c_char {
 pub extern "C" fn private_key_from_mnemonic(
   mnemonic_cstr: *const c_char,
   index: u32,
-) -> PrivateKey {
+) -> CPrivateKey {
   let mnemonic_str = cstr_to_string(&mnemonic_cstr);
   let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
   let derivation_path = DerivationPath::from_str(&format!(
@@ -65,11 +73,16 @@ pub extern "C" fn private_key_from_mnemonic(
   let address_str = format!("{}", address_str_json.replace("\"", ""));
 
   let priv_struct = PrivateKey {
-    private_key: string_to_cstr(&private_key_str),
-    address: string_to_cstr(&address_str),
+    private_key: private_key_str,
+    address: address_str,
   };
 
-  return priv_struct;
+  return CPrivateKey::c_repr_of(priv_struct).unwrap();
+}
+
+#[no_mangle]
+pub extern "C" fn private_key_free(private_key: CPrivateKey) {
+  drop(private_key);
 }
 
 #[no_mangle]
@@ -122,9 +135,4 @@ fn cstr_to_string<'a>(cstr_ptr: &'a *const c_char) -> &'a str {
     CStr::from_ptr(*cstr_ptr)
   };
   return cstr.to_str().unwrap();
-}
-
-fn string_to_cstr(string: &str) -> *mut c_char {
-  let sig_c_str = CString::new(string).unwrap();
-  return sig_c_str.into_raw();
 }

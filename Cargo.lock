@@ -1069,6 +1069,7 @@ dependencies = [
  "coins-bip39",
  "ethers-core",
  "ethers-signers",
+ "ffi-convert",
  "k256",
  "libc",
  "opaque-pointer",
@@ -1189,6 +1190,28 @@ checksum = "d0f40b2dcd8bc322217a5f6559ae5f9e9d1de202a2ecee2e9eafcbece7562a4f"
 dependencies = [
  "rand_core 0.6.3",
  "subtle",
+]
+
+[[package]]
+name = "ffi-convert"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36e8b2c8fd8f9948c8db1848bef2e9aade535b1461e59204d67e18a9a35b4af6"
+dependencies = [
+ "ffi-convert-derive",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
+name = "ffi-convert-derive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ced52c8e0b09123ed593c2e7f581f42d1cf035d3289732d2c627b5cd5e165bf3"
+dependencies = [
+ "proc-macro2 1.0.30",
+ "quote 1.0.10",
+ "syn 1.0.80",
 ]
 
 [[package]]
