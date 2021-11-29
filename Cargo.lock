@@ -1070,6 +1070,7 @@ dependencies = [
  "ethers-core",
  "ethers-signers",
  "ffi-convert",
+ "futures-executor",
  "k256",
  "libc",
  "opaque-pointer",

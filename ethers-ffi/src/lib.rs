@@ -4,8 +4,8 @@ extern crate libc;
 use coins_bip32::{path::DerivationPath, enc::{XKeyEncoder, MainnetEncoder}};
 use coins_bip39::{English, Mnemonic};
 use ethers_core::types::{transaction::eip2718::TypedTransaction, Address};
-use ethers_core::utils::keccak256;
-use ethers_signers::LocalWallet;
+use ethers_core::utils::{keccak256, to_checksum};
+use ethers_signers::{LocalWallet, Signer};
 use k256::ecdsa::{VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 
@@ -14,18 +14,21 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::str::FromStr;
 use ffi_convert::*;
+use futures_executor::block_on;
 
 const DEFAULT_DERIVATION_PATH_PREFIX: &str = "m/44'/60'/0'/0/";
 
 // copied from aws/utils
 /// Convert a verifying key to an ethereum address
-fn verifying_key_to_address(key: VerifyingKey) -> Address {
+fn verifying_key_to_checksummed_address(key: VerifyingKey) -> String {
   // false for uncompressed
   let uncompressed_pub_key = key.to_encoded_point(false);
   let public_key = uncompressed_pub_key.to_bytes();
   debug_assert_eq!(public_key[0], 0x04);
   let hash = keccak256(&public_key[1..]);
-  Address::from_slice(&hash[12..])
+  let address = Address::from_slice(&hash[12..]);
+  let checksum = to_checksum(&address, None);
+  return checksum
 }
 
 pub struct PrivateKey {
@@ -41,24 +44,47 @@ pub struct CPrivateKey {
   address: *const c_char,
 }
 
+pub struct MnemonicAndAddress {
+  mnemonic: String,
+  address: String,
+}
+
+#[repr(C)]
+#[derive(CReprOf, AsRust, CDrop)]
+#[target_type(MnemonicAndAddress)]
+pub struct CMnemonicAndAddress {
+  mnemonic: *const c_char,
+  address: *const c_char,
+}
+
 #[no_mangle]
-pub extern "C" fn generate_mnemonic() -> *mut c_char {
+pub extern "C" fn generate_mnemonic() -> CMnemonicAndAddress {
   let rng = &mut rand::thread_rng();
   let mnemonic = Mnemonic::<English>::new_with_count(rng, 12)
     .unwrap()
     .to_phrase()
     .unwrap();
-  let mnemonic_c_str = CString::new(mnemonic).unwrap();
-  return mnemonic_c_str.into_raw();
+  let mnem_clone = mnemonic.clone();
+  let private_key = derive_private_key(mnemonic, 0);
+
+  let mnemonic_struct = MnemonicAndAddress {
+    mnemonic: mnem_clone,
+    address: private_key.address,
+  };
+
+  return CMnemonicAndAddress::c_repr_of(mnemonic_struct).unwrap();
 }
 
 #[no_mangle]
-pub extern "C" fn private_key_from_mnemonic(
-  mnemonic_cstr: *const c_char,
+pub extern "C" fn mnemonic_free(mnemonic: CMnemonicAndAddress) {
+  drop(mnemonic);
+}
+
+fn derive_private_key(
+  mnemonic_str: String,
   index: u32,
-) -> CPrivateKey {
-  let mnemonic_str = cstr_to_string(&mnemonic_cstr);
-  let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_str).unwrap();
+) -> PrivateKey {
+  let mnemonic = Mnemonic::<English>::new_from_phrase(&mnemonic_str).unwrap();
   let derivation_path = DerivationPath::from_str(&format!(
     "{}{}",
     DEFAULT_DERIVATION_PATH_PREFIX,
@@ -68,15 +94,21 @@ pub extern "C" fn private_key_from_mnemonic(
   let private_key = mnemonic.derive_key(derivation_path, None).unwrap();
   let private_key_str = MainnetEncoder::xpriv_to_base58(&private_key).unwrap();
   let verifying_key = private_key.verify_key();
-  let address = verifying_key_to_address(verifying_key.key);
-  let address_str_json = serde_json::to_string_pretty(&address).unwrap();
-  let address_str = format!("{}", address_str_json.replace("\"", ""));
+  let address = verifying_key_to_checksummed_address(verifying_key.key);
 
-  let priv_struct = PrivateKey {
+  return PrivateKey {
     private_key: private_key_str,
-    address: address_str,
+    address: address,
   };
+}
 
+#[no_mangle]
+pub extern "C" fn private_key_from_mnemonic(
+  mnemonic_cstr: *const c_char,
+  index: u32,
+) -> CPrivateKey {
+  let mnemonic_str = cstr_to_string(&mnemonic_cstr);
+  let priv_struct = derive_private_key(mnemonic_str.to_string(), index);
   return CPrivateKey::c_repr_of(priv_struct).unwrap();
 }
 
@@ -113,6 +145,25 @@ pub extern "C" fn sign_tx_with_wallet(
   let tx: TypedTransaction = serde_json::from_str(tx_str).unwrap();
 
   let signature = wallet.sign_transaction_sync(&tx);
+
+  let sig_string = serde_json::to_string(&signature).unwrap();
+  let sig_c_str = CString::new(sig_string).unwrap();
+  return sig_c_str.into_raw();
+}
+
+#[no_mangle]
+pub extern "C" fn sign_message_with_wallet(
+  wallet_ptr: *const LocalWallet,
+  message: *const c_char,
+) -> *mut c_char {
+  let wallet = unsafe { opaque_pointer::object(wallet_ptr) }.unwrap();
+  let message_c_str = unsafe {
+    assert!(!message.is_null());
+
+    CStr::from_ptr(message)
+  };
+  let message_str = message_c_str.to_str().unwrap();
+  let signature = block_on(wallet.sign_message(&message_str)).unwrap();
 
   let sig_string = serde_json::to_string(&signature).unwrap();
   let sig_c_str = CString::new(sig_string).unwrap();
