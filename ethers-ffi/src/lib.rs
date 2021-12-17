@@ -3,11 +3,12 @@ extern crate libc;
 // use the ethers_signers crate to manage LocalWallet and Signer
 use coins_bip32::{path::DerivationPath, enc::{XKeyEncoder, MainnetEncoder}};
 use coins_bip39::{English, Mnemonic};
-use ethers_core::types::{transaction::eip2718::TypedTransaction, Address};
-use ethers_core::utils::{keccak256, to_checksum};
+use ethers_core::types::{transaction::eip2718::TypedTransaction, Address, U64};
+use ethers_core::utils::{keccak256, to_checksum, serialize};
 use ethers_signers::{LocalWallet, Signer};
 use k256::ecdsa::{VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
+use rlp::RlpStream;
 
 use libc::c_char;
 use std::ffi::CStr;
@@ -57,6 +58,17 @@ pub struct CMnemonicAndAddress {
   address: *const c_char,
 }
 
+pub struct SignedTransaction {
+  transaction: String
+}
+
+#[repr(C)]
+#[derive(CReprOf, AsRust, CDrop)]
+#[target_type(SignedTransaction)]
+pub struct CSignedTransaction {
+  transaction: *const c_char
+}
+
 #[no_mangle]
 pub extern "C" fn generate_mnemonic() -> CMnemonicAndAddress {
   let rng = &mut rand::thread_rng();
@@ -104,10 +116,14 @@ fn derive_private_key(
 
 #[no_mangle]
 pub extern "C" fn private_key_from_mnemonic(
-  mnemonic_cstr: *const c_char,
+  mnemonic: *const c_char,
   index: u32,
 ) -> CPrivateKey {
-  let mnemonic_str = cstr_to_string(&mnemonic_cstr);
+  let mnemonic_c_str = unsafe {
+    assert!(!mnemonic.is_null());
+    CStr::from_ptr(mnemonic)
+  };
+  let mnemonic_str = mnemonic_c_str.to_str().unwrap();
   let priv_struct = derive_private_key(mnemonic_str.to_string(), index);
   return CPrivateKey::c_repr_of(priv_struct).unwrap();
 }
@@ -119,9 +135,14 @@ pub extern "C" fn private_key_free(private_key: CPrivateKey) {
 
 #[no_mangle]
 pub extern "C" fn wallet_from_private_key(private_key: *const c_char) -> *mut LocalWallet {
-  let key_str = cstr_to_string(&private_key);
-  let xpriv = MainnetEncoder::xpriv_from_base58(key_str).unwrap();
-  let wallet = LocalWallet::from(xpriv.key);
+  let private_key_c_str = unsafe {
+    assert!(!private_key.is_null());
+    CStr::from_ptr(private_key)
+  };
+  let private_key_str = private_key_c_str.to_str().unwrap();
+  let xpriv = MainnetEncoder::xpriv_from_base58(private_key_str).unwrap();
+  let wallet: LocalWallet = LocalWallet::from(xpriv.key);
+  println!("Created wallet with address: {}", wallet.address());
   return opaque_pointer::raw(wallet);
 }
 
@@ -134,21 +155,39 @@ pub extern "C" fn wallet_free(wallet_ptr: *mut LocalWallet) {
 pub extern "C" fn sign_tx_with_wallet(
   wallet_ptr: *const LocalWallet,
   json_tx: *const c_char,
-) -> *mut c_char {
+) -> CSignedTransaction {
   let wallet = unsafe { opaque_pointer::object(wallet_ptr) }.unwrap();
   let tx_c_str = unsafe {
     assert!(!json_tx.is_null());
-
     CStr::from_ptr(json_tx)
   };
+  println!("Using wallet with address: {}", wallet.address());
+
   let tx_str = tx_c_str.to_str().unwrap();
   let tx: TypedTransaction = serde_json::from_str(tx_str).unwrap();
+  println!("Parsed transaction tx: {:?}", tx);
+  let chain_id: U64 = U64::from(4);
+  let wallet = wallet.clone().with_chain_id(chain_id.as_u64());
 
   let signature = wallet.sign_transaction_sync(&tx);
+  println!("Signature: {:?}", signature);
+  let enc = rlp::encode(&tx.rlp_signed(chain_id, &signature).as_ref());
+  println!("Serialized tx: {:?}", enc);
+  let ser_str = hex::encode(enc.to_vec());
+  println!("Serialized string: {:?}", ser_str);
 
-  let sig_string = serde_json::to_string(&signature).unwrap();
-  let sig_c_str = CString::new(sig_string).unwrap();
-  return sig_c_str.into_raw();
+  // let ser_str = hex::encode(signature.to_vec());
+  // println!("Serialized string: {:?}", ser_str);
+
+  // let serialized_tx = tx.rlp_signed(chain_id, &signature);
+  // println!("Serialized tx: {:?}", serialized_tx);
+  // let ser_str = hex::encode(serialized_tx.to_vec());
+  // println!("Serialized string: {:?}", ser_str);
+
+  let t = SignedTransaction {
+    transaction: ser_str
+  };
+  return CSignedTransaction::c_repr_of(t).unwrap();
 }
 
 #[no_mangle]
@@ -178,12 +217,4 @@ pub extern "C" fn string_free(string: *mut c_char) {
     }
     CString::from_raw(string)
   };
-}
-
-fn cstr_to_string<'a>(cstr_ptr: &'a *const c_char) -> &'a str {
-  let cstr = unsafe {
-    assert!(!cstr_ptr.is_null());
-    CStr::from_ptr(*cstr_ptr)
-  };
-  return cstr.to_str().unwrap();
 }
