@@ -4,9 +4,10 @@ use serde::{
 };
 
 use std::fmt::{Display, Formatter, LowerHex, Result as FmtResult};
+use rlp_derive::{RlpEncodable, RlpDecodable};
 
 /// Wrapper type around Bytes to deserialize/serialize "0x" prefixed ethereum hex strings
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Ord, PartialOrd)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, Ord, PartialOrd, RlpEncodable, RlpDecodable)]
 pub struct Bytes(
     #[serde(serialize_with = "serialize_bytes", deserialize_with = "deserialize_bytes")]
     pub  bytes::Bytes,

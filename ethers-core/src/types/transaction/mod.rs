@@ -4,6 +4,7 @@ pub mod response;
 pub mod eip1559;
 pub mod eip2718;
 pub mod eip2930;
+pub mod eip1559tx;
 
 #[cfg(feature = "eip712")]
 pub mod eip712;

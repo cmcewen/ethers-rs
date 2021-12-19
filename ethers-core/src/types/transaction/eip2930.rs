@@ -2,7 +2,7 @@ use super::{normalize_v, request::TransactionRequest};
 use crate::types::{Address, Bytes, Signature, H256, U256, U64};
 
 use rlp::RlpStream;
-use rlp_derive::{RlpEncodable, RlpEncodableWrapper};
+use rlp_derive::{RlpEncodable, RlpEncodableWrapper, RlpDecodable, RlpDecodableWrapper};
 use serde::{Deserialize, Serialize};
 
 const NUM_EIP2930_FIELDS: usize = 8;
@@ -10,7 +10,7 @@ const NUM_EIP2930_FIELDS: usize = 8;
 /// Access list
 // NB: Need to use `RlpEncodableWrapper` else we get an extra [] in the output
 // https://github.com/gakonst/ethers-rs/pull/353#discussion_r680683869
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodableWrapper)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct AccessList(pub Vec<AccessListItem>);
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -38,7 +38,7 @@ impl TransactionRequest {
 }
 
 /// Access list item
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, RlpEncodable, RlpDecodable)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessListItem {
     /// Accessed address
