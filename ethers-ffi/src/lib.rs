@@ -3,12 +3,11 @@ extern crate libc;
 // use the ethers_signers crate to manage LocalWallet and Signer
 use coins_bip32::{path::DerivationPath, enc::{XKeyEncoder, MainnetEncoder}};
 use coins_bip39::{English, Mnemonic};
-use ethers_core::types::{transaction::eip2718::TypedTransaction, Address, U64};
-use ethers_core::utils::{keccak256, to_checksum, serialize};
+use ethers_core::types::{transaction::eip2718::TypedTransaction, Address};
+use ethers_core::utils::{keccak256, to_checksum};
 use ethers_signers::{LocalWallet, Signer};
 use k256::ecdsa::{VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
-use rlp::RlpStream;
 
 use libc::c_char;
 use std::ffi::CStr;
@@ -155,37 +154,24 @@ pub extern "C" fn wallet_free(wallet_ptr: *mut LocalWallet) {
 pub extern "C" fn sign_tx_with_wallet(
   wallet_ptr: *const LocalWallet,
   json_tx: *const c_char,
+  chain_id: u64
 ) -> CSignedTransaction {
   let wallet = unsafe { opaque_pointer::object(wallet_ptr) }.unwrap();
   let tx_c_str = unsafe {
     assert!(!json_tx.is_null());
     CStr::from_ptr(json_tx)
   };
-  println!("Using wallet with address: {}", wallet.address());
 
   let tx_str = tx_c_str.to_str().unwrap();
   let tx: TypedTransaction = serde_json::from_str(tx_str).unwrap();
-  println!("Parsed transaction tx: {:?}", tx);
-  let chain_id: U64 = U64::from(4);
-  let wallet = wallet.clone().with_chain_id(chain_id.as_u64());
+  let wallet = wallet.clone().with_chain_id(chain_id);
 
   let signature = wallet.sign_transaction_sync(&tx);
-  println!("Signature: {:?}", signature);
-  let enc = rlp::encode(&tx.rlp_signed(chain_id, &signature).as_ref());
-  println!("Serialized tx: {:?}", enc);
-  let ser_str = hex::encode(enc.to_vec());
-  println!("Serialized string: {:?}", ser_str);
-
-  // let ser_str = hex::encode(signature.to_vec());
-  // println!("Serialized string: {:?}", ser_str);
-
-  // let serialized_tx = tx.rlp_signed(chain_id, &signature);
-  // println!("Serialized tx: {:?}", serialized_tx);
-  // let ser_str = hex::encode(serialized_tx.to_vec());
-  // println!("Serialized string: {:?}", ser_str);
+  let rlp_encoded = rlp::encode(&tx.rlp_signed(chain_id, &signature).as_ref());
+  let hex_str = hex::encode(rlp_encoded.to_vec());
 
   let t = SignedTransaction {
-    transaction: ser_str
+    transaction: hex_str
   };
   return CSignedTransaction::c_repr_of(t).unwrap();
 }
