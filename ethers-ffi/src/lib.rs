@@ -3,7 +3,7 @@ extern crate libc;
 // use the ethers_signers crate to manage LocalWallet and Signer
 use coins_bip32::{path::DerivationPath, enc::{XKeyEncoder, MainnetEncoder}};
 use coins_bip39::{English, Mnemonic};
-use ethers_core::types::{transaction::eip2718::TypedTransaction, Address};
+use ethers_core::types::{Address, H256};
 use ethers_core::utils::{keccak256, to_checksum};
 use ethers_signers::{LocalWallet, Signer};
 use k256::ecdsa::{VerifyingKey};
@@ -58,14 +58,14 @@ pub struct CMnemonicAndAddress {
 }
 
 pub struct SignedTransaction {
-  transaction: String
+  signature: String
 }
 
 #[repr(C)]
 #[derive(CReprOf, AsRust, CDrop)]
 #[target_type(SignedTransaction)]
 pub struct CSignedTransaction {
-  transaction: *const c_char
+  signature: *const c_char
 }
 
 #[no_mangle]
@@ -153,25 +153,27 @@ pub extern "C" fn wallet_free(wallet_ptr: *mut LocalWallet) {
 #[no_mangle]
 pub extern "C" fn sign_tx_with_wallet(
   wallet_ptr: *const LocalWallet,
-  json_tx: *const c_char,
+  tx_hash: *const c_char,
   chain_id: u64
 ) -> CSignedTransaction {
   let wallet = unsafe { opaque_pointer::object(wallet_ptr) }.unwrap();
-  let tx_c_str = unsafe {
-    assert!(!json_tx.is_null());
-    CStr::from_ptr(json_tx)
+  let tx_hash_c_str = unsafe {
+    assert!(!tx_hash.is_null());
+    CStr::from_ptr(tx_hash)
   };
 
-  let tx_str = tx_c_str.to_str().unwrap();
-  let tx: TypedTransaction = serde_json::from_str(tx_str).unwrap();
+  let tx_hash_str = tx_hash_c_str.to_str().unwrap();
   let wallet = wallet.clone().with_chain_id(chain_id);
+  let hex_tx = hex::decode(tx_hash_str).unwrap();
+  let hex_slice = hex_tx.as_slice();
+  let fixed_arr: [u8; 32] = hex_slice.try_into().unwrap();
+  let tx_hash = H256::from(fixed_arr);
 
-  let signature = wallet.sign_transaction_sync(&tx);
-  let rlp_encoded = rlp::encode(&tx.rlp_signed(chain_id, &signature).as_ref());
-  let hex_str = hex::encode(rlp_encoded.to_vec());
+  let signature = wallet.sign_hash(tx_hash, true);
+  let sig_string = format!("{}", signature);
 
   let t = SignedTransaction {
-    transaction: hex_str
+    signature: sig_string
   };
   return CSignedTransaction::c_repr_of(t).unwrap();
 }
@@ -190,7 +192,7 @@ pub extern "C" fn sign_message_with_wallet(
   let message_str = message_c_str.to_str().unwrap();
   let signature = block_on(wallet.sign_message(&message_str)).unwrap();
 
-  let sig_string = serde_json::to_string(&signature).unwrap();
+  let sig_string = format!("{}", signature);
   let sig_c_str = CString::new(sig_string).unwrap();
   return sig_c_str.into_raw();
 }

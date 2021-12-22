@@ -1076,8 +1076,6 @@ dependencies = [
  "libc",
  "opaque-pointer",
  "rand 0.8.4",
- "rlp",
- "serde_json",
 ]
 
 [[package]]

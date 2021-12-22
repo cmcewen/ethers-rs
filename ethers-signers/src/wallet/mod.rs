@@ -124,7 +124,7 @@ impl<D: DigestSigner<Sha256Proxy, RecoverableSignature>> Wallet<D> {
         self.sign_hash(sighash, true)
     }
 
-    fn sign_hash(&self, hash: H256, eip155: bool) -> Signature {
+    pub fn sign_hash(&self, hash: H256, eip155: bool) -> Signature {
         let recoverable_sig: RecoverableSignature =
             self.signer.sign_digest(Sha256Proxy::from(hash));
 
