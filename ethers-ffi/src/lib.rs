@@ -179,7 +179,6 @@ pub extern "C" fn sign_tx_with_wallet(
 pub extern "C" fn sign_message_with_wallet(
   wallet_ptr: *const LocalWallet,
   message: *const c_char,
-  chain_id: u64,
 ) -> *mut c_char {
   let wallet = unsafe { opaque_pointer::object(wallet_ptr) }.unwrap();
   let message_c_str = unsafe {
@@ -188,7 +187,6 @@ pub extern "C" fn sign_message_with_wallet(
     CStr::from_ptr(message)
   };
   let message_str = message_c_str.to_str().unwrap();
-  let wallet = wallet.clone().with_chain_id(chain_id);
   let signature = block_on(wallet.sign_message(&message_str)).unwrap();
 
   let sig_string = format!("{}", signature);
@@ -211,16 +209,11 @@ pub extern "C" fn sign_hash_with_wallet(
   };
   let hash_str = hash_c_str.to_str().unwrap();
   let wallet = wallet.clone().with_chain_id(chain_id);
-  println!("{}", hash_str);
 
   let hex_hash = hex::decode(hash_str).unwrap();
-  println!("{:?}", hex_hash);
   let hex_slice = hex_hash.as_slice();
-  println!("{:?}", hex_slice);
   let fixed_arr: [u8; 32] = hex_slice.try_into().unwrap();
-  println!("{:?}", fixed_arr);
   let hash = H256::from(fixed_arr);
-  println!("{:?}", hash);
 
   let signature = wallet.sign_hash(hash, eip155);
 
