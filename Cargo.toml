@@ -94,4 +94,4 @@ hex = "0.4.3"
 bytes = "1.1.0"
 
 [patch.crates-io]
-coins-bip32 = { path = '/Users/cmcewen/uniswap/bitcoins-rs/target/package/coins-bip32-0.3.1/' }
+coins-bip32 = { git = 'ssh://git@github.com/Uniswap/bitcoin-rs' }
