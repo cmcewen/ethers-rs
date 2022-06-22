@@ -67,7 +67,6 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 /// ```no_run
 /// use ethers_core::{
 ///     abi::Abi,
-///     utils::Solc,
 ///     types::{Address, H256},
 /// };
 /// use ethers_contract::Contract;
@@ -143,7 +142,6 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 /// println!("{:?}", logs);
 /// # Ok(())
 /// # }
-///
 /// ```
 ///
 /// _Disclaimer: these above docs have been adapted from the corresponding [ethers.js page](https://docs.ethers.io/ethers.js/html/api-contract.html)_
@@ -152,21 +150,27 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 /// [`Abigen` builder]: crate::Abigen
 /// [`event`]: method@crate::Contract::event
 /// [`method`]: method@crate::Contract::method
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Contract<M> {
     base_contract: BaseContract,
     client: Arc<M>,
     address: Address,
 }
 
+impl<M> Clone for Contract<M> {
+    fn clone(&self) -> Self {
+        Contract {
+            base_contract: self.base_contract.clone(),
+            client: self.client.clone(),
+            address: self.address,
+        }
+    }
+}
+
 impl<M: Middleware> Contract<M> {
     /// Creates a new contract from the provided client, abi and address
     pub fn new(address: Address, abi: impl Into<BaseContract>, client: impl Into<Arc<M>>) -> Self {
-        Self {
-            base_contract: abi.into(),
-            client: client.into(),
-            address,
-        }
+        Self { base_contract: abi.into(), client: client.into(), address }
     }
 
     /// Returns an [`Event`](crate::builders::Event) builder for the provided event.
@@ -253,6 +257,7 @@ impl<M: Middleware> Contract<M> {
     /// Returns a new contract instance at `address`.
     ///
     /// Clones `self` internally
+    #[must_use]
     pub fn at<T: Into<Address>>(&self, address: T) -> Self
     where
         M: Clone,
@@ -265,13 +270,12 @@ impl<M: Middleware> Contract<M> {
     /// Returns a new contract instance using the provided client
     ///
     /// Clones `self` internally
-    pub fn connect(&self, client: Arc<M>) -> Self
+    #[must_use]
+    pub fn connect<N>(&self, client: Arc<N>) -> Contract<N>
     where
-        M: Clone,
+        N: Clone,
     {
-        let mut this = self.clone();
-        this.client = client;
-        this
+        Contract { base_contract: self.base_contract.clone(), client, address: self.address }
     }
 
     /// Returns the contract's address

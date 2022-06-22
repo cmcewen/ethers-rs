@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use ethers_core::types::transaction::eip2718::TypedTransaction;
-use ethers_core::types::*;
+use ethers_core::types::{transaction::eip2718::TypedTransaction, *};
 use ethers_providers::{FromErr, Middleware, PendingTransaction};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use thiserror::Error;
@@ -22,18 +21,31 @@ where
     /// Instantiates the nonce manager with a 0 nonce. The `address` should be the
     /// address which you'll be sending transactions from
     pub fn new(inner: M, address: Address) -> Self {
-        Self {
-            initialized: false.into(),
-            nonce: 0.into(),
-            inner,
-            address,
-        }
+        Self { initialized: false.into(), nonce: 0.into(), inner, address }
     }
 
     /// Returns the next nonce to be used
     pub fn next(&self) -> U256 {
         let nonce = self.nonce.fetch_add(1, Ordering::SeqCst);
         nonce.into()
+    }
+
+    pub async fn initialize_nonce(
+        &self,
+        block: Option<BlockId>,
+    ) -> Result<U256, NonceManagerError<M>> {
+        // initialize the nonce the first time the manager is called
+        if !self.initialized.load(Ordering::SeqCst) {
+            let nonce = self
+                .inner
+                .get_transaction_count(self.address, block)
+                .await
+                .map_err(FromErr::from)?;
+            self.nonce.store(nonce.as_u64(), Ordering::SeqCst);
+            self.initialized.store(true, Ordering::SeqCst);
+        }
+        // return current nonce
+        Ok(self.nonce.load(Ordering::SeqCst).into())
     }
 
     async fn get_transaction_count_with_manager(
@@ -83,6 +95,18 @@ where
         &self.inner
     }
 
+    async fn fill_transaction(
+        &self,
+        tx: &mut TypedTransaction,
+        block: Option<BlockId>,
+    ) -> Result<(), Self::Error> {
+        if tx.nonce().is_none() {
+            tx.set_nonce(self.get_transaction_count_with_manager(block).await?);
+        }
+
+        Ok(self.inner().fill_transaction(tx, block).await.map_err(FromErr::from)?)
+    }
+
     /// Signs and broadcasts the transaction. The optional parameter `block` can be passed so that
     /// gas cost and nonce calculations take it into account. For simple transactions this can be
     /// left to `None`.
@@ -106,10 +130,7 @@ where
                     // was a nonce mismatch
                     self.nonce.store(nonce.as_u64(), Ordering::SeqCst);
                     tx.set_nonce(nonce);
-                    self.inner
-                        .send_transaction(tx, block)
-                        .await
-                        .map_err(FromErr::from)
+                    self.inner.send_transaction(tx, block).await.map_err(FromErr::from)
                 } else {
                     // propagate the error otherwise
                     Err(FromErr::from(err))

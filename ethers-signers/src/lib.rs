@@ -1,43 +1,7 @@
 //! Provides a unified interface for locally signing transactions.
-//!
-//! You can implement the `Signer` trait to extend functionality to other signers
-//! such as Hardware Security Modules, KMS etc.
-//!
-//! The exposed interfaces return a recoverable signature. In order to convert the signature
-//! and the [`TransactionRequest`] to a [`Transaction`], look at the signing middleware.
-//!
-//! Supported signers:
-//! - [Private key](crate::LocalWallet)
-//! - [Ledger](crate::Ledger)
-//! - [YubiHSM2](crate::YubiWallet)
-//! - [AWS KMS](crate::AwsSigner)
-//!
-//! ```no_run
-//! # use ethers_signers::{LocalWallet, Signer};
-//! # use ethers_core::{k256::ecdsa::SigningKey, types::TransactionRequest};
-//!
-//! # async fn foo() -> Result<(), Box<dyn std::error::Error>> {
-//! // instantiate the wallet
-//! let wallet = "dcf2cbdd171a21c480aa7f53d77f31bb102282b3ff099c78e3118b37348c72f7"
-//!     .parse::<LocalWallet>()?;
-//!
-//! // create a transaction
-//! let tx = TransactionRequest::new()
-//!     .to("vitalik.eth") // this will use ENS
-//!     .value(10000).into();
-//!
-//! // sign it
-//! let signature = wallet.sign_transaction(&tx).await?;
-//!
-//! // can also sign a message
-//! let signature = wallet.sign_message("hello world").await?;
-//! signature.verify("hello world", wallet.address()).unwrap();
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! [`Transaction`]: ethers_core::types::Transaction
-//! [`TransactionRequest`]: ethers_core::types::TransactionRequest
+#![deny(unsafe_code)]
+#![deny(rustdoc::broken_intra_doc_links)]
+
 mod wallet;
 pub use wallet::{MnemonicBuilder, Wallet, WalletError};
 
@@ -59,6 +23,14 @@ pub use ledger::{
     types::{DerivationType as HDPath, LedgerError},
 };
 
+#[cfg(feature = "trezor")]
+mod trezor;
+#[cfg(feature = "trezor")]
+pub use trezor::{
+    app::TrezorEthereum as Trezor,
+    types::{DerivationType as TrezorHDPath, TrezorError},
+};
+
 #[cfg(feature = "yubi")]
 pub use yubihsm;
 
@@ -70,7 +42,8 @@ pub use aws::{AwsSigner, AwsSignerError};
 
 use async_trait::async_trait;
 use ethers_core::types::{
-    transaction::eip2718::TypedTransaction, transaction::eip712::Eip712, Address, Signature,
+    transaction::{eip2718::TypedTransaction, eip712::Eip712},
+    Address, Signature,
 };
 use std::error::Error;
 
@@ -109,5 +82,6 @@ pub trait Signer: std::fmt::Debug + Send + Sync {
     fn chain_id(&self) -> u64;
 
     /// Sets the signer's chain id
+    #[must_use]
     fn with_chain_id<T: Into<u64>>(self, chain_id: T) -> Self;
 }

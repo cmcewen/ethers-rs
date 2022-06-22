@@ -1,6 +1,6 @@
 #[tokio::main]
 #[cfg(feature = "yubi")]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use ethers::{prelude::*, utils::parse_ether};
     use yubihsm::{Connector, Credentials, UsbConfig};
 
@@ -17,9 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let client = SignerMiddleware::new(provider, wallet);
 
     // Create and broadcast a transaction (ENS enabled!)
-    let tx = TransactionRequest::new()
-        .to("vitalik.eth")
-        .value(parse_ether(10)?);
+    let tx = TransactionRequest::new().to("vitalik.eth").value(parse_ether(10)?);
     let pending_tx = client.send_transaction(tx, None).await?;
 
     // Get the receipt

@@ -9,8 +9,9 @@ mod eth_tests {
     use super::*;
     use ethers_contract::{LogMeta, Multicall};
     use ethers_core::{
-        types::{transaction::eip712::Eip712, Address, BlockId, I256, U256},
-        utils::{keccak256, Ganache},
+        abi::{Detokenize, Token, Tokenizable},
+        types::{transaction::eip712::Eip712, Address, BlockId, Bytes, I256, U256},
+        utils::{keccak256, Anvil},
     };
     use ethers_derive_eip712::*;
     use ethers_middleware::signer::SignerMiddleware;
@@ -22,15 +23,15 @@ mod eth_tests {
     async fn deploy_and_call_contract() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
 
-        // launch ganache
-        let ganache = Ganache::new().spawn();
+        // launch anvil
+        let anvil = Anvil::new().spawn();
 
         // Instantiate the clients. We assume that clients consume the provider and the wallet
         // (which makes sense), so for multi-client tests, you must clone the provider.
-        let addrs = ganache.addresses().to_vec();
+        let addrs = anvil.addresses().to_vec();
         let addr2 = addrs[1];
-        let client = connect(&ganache, 0);
-        let client2 = connect(&ganache, 1);
+        let client = connect(&anvil, 0);
+        let client2 = connect(&anvil, 1);
 
         // create a factory which will be used to deploy instances of the contract
         let factory = ContractFactory::new(abi, bytecode, client.clone());
@@ -38,11 +39,12 @@ mod eth_tests {
         // `send` consumes the deployer so it must be cloned for later re-use
         // (practically it's not expected that you'll need to deploy multiple instances of
         // the _same_ deployer, so it's fine to clone here from a dev UX vs perf tradeoff)
-        let deployer = factory
-            .deploy("initial value".to_string())
-            .unwrap()
-            .legacy();
-        let contract = deployer.clone().send().await.unwrap();
+        let deployer = factory.deploy("initial value".to_string()).unwrap().legacy();
+        // dry runs the deployment of the contract. takes the deployer by reference, no need to
+        // clone.
+        assert!(deployer.call().await.is_ok());
+        let (contract, receipt) = deployer.clone().send_with_receipt().await.unwrap();
+        assert_eq!(receipt.contract_address.unwrap(), contract.address());
 
         let get_value = contract.method::<_, String>("getValue", ()).unwrap();
         let last_sender = contract.method::<_, Address>("lastSender", ()).unwrap();
@@ -67,24 +69,15 @@ mod eth_tests {
         assert_eq!(last_sender.clone().call().await.unwrap(), addr2);
         assert_eq!(get_value.clone().call().await.unwrap(), "hi");
         assert_eq!(tx.input, calldata);
-        assert_eq!(tx_receipt.gas_used.unwrap(), gas_estimate);
 
         // we can also call contract methods at other addresses with the `at` call
         // (useful when interacting with multiple ERC20s for example)
         let contract2_addr = deployer.send().await.unwrap().address();
         let contract2 = contract.at(contract2_addr);
-        let init_value: String = contract2
-            .method::<_, String>("getValue", ())
-            .unwrap()
-            .call()
-            .await
-            .unwrap();
-        let init_address = contract2
-            .method::<_, Address>("lastSender", ())
-            .unwrap()
-            .call()
-            .await
-            .unwrap();
+        let init_value: String =
+            contract2.method::<_, String>("getValue", ()).unwrap().call().await.unwrap();
+        let init_address =
+            contract2.method::<_, Address>("lastSender", ()).unwrap().call().await.unwrap();
         assert_eq!(init_address, Address::zero());
         assert_eq!(init_value, "initial value");
 
@@ -104,16 +97,13 @@ mod eth_tests {
     #[cfg(feature = "abigen")]
     async fn get_past_events() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
-        let ganache = Ganache::new().spawn();
-        let client = connect(&ganache, 0);
+        let anvil = Anvil::new().spawn();
+        let client = connect(&anvil, 0);
         let address = client.get_accounts().await.unwrap()[0];
         let contract = deploy(client.clone(), abi, bytecode).await;
 
         // make a call with `client`
-        let func = contract
-            .method::<_, H256>("setValue", "hi".to_owned())
-            .unwrap()
-            .legacy();
+        let func = contract.method::<_, H256>("setValue", "hi".to_owned()).unwrap().legacy();
         let tx = func.send().await.unwrap();
         let _receipt = tx.await.unwrap();
 
@@ -146,9 +136,9 @@ mod eth_tests {
     #[cfg(feature = "abigen")]
     async fn get_events_with_meta() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
-        let ganache = Ganache::new().spawn();
-        let client = connect(&ganache, 0);
-        let address = ganache.addresses()[0];
+        let anvil = Anvil::new().spawn();
+        let client = connect(&anvil, 0);
+        let address = anvil.addresses()[0];
         let contract = deploy(client.clone(), abi, bytecode).await;
 
         // and we can fetch the events
@@ -178,19 +168,14 @@ mod eth_tests {
     #[tokio::test]
     async fn call_past_state() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
-        let ganache = Ganache::new().spawn();
-        let client = connect(&ganache, 0);
+        let anvil = Anvil::new().spawn();
+        let client = connect(&anvil, 0);
         let contract = deploy(client.clone(), abi, bytecode).await;
         let deployed_block = client.get_block_number().await.unwrap();
 
         // assert initial state
-        let value = contract
-            .method::<_, String>("getValue", ())
-            .unwrap()
-            .legacy()
-            .call()
-            .await
-            .unwrap();
+        let value =
+            contract.method::<_, String>("getValue", ()).unwrap().legacy().call().await.unwrap();
         assert_eq!(value, "initial value");
 
         // make a call with `client`
@@ -203,13 +188,8 @@ mod eth_tests {
             .unwrap();
 
         // assert new value
-        let value = contract
-            .method::<_, String>("getValue", ())
-            .unwrap()
-            .legacy()
-            .call()
-            .await
-            .unwrap();
+        let value =
+            contract.method::<_, String>("getValue", ()).unwrap().legacy().call().await.unwrap();
         assert_eq!(value, "hi");
 
         // assert previous value
@@ -250,39 +230,19 @@ mod eth_tests {
         let deployed_block = client.get_block_number().await.unwrap();
 
         // assert initial state
-        let value = contract
-            .method::<_, String>("getValue", ())
-            .unwrap()
-            .call()
-            .await
-            .unwrap();
+        let value = contract.method::<_, String>("getValue", ()).unwrap().call().await.unwrap();
         assert_eq!(value, "initial value");
 
         // make a call with `client`
-        let _tx_hash = *contract
-            .method::<_, H256>("setValue", "hi".to_owned())
-            .unwrap()
-            .send()
-            .await
-            .unwrap();
+        let _tx_hash =
+            *contract.method::<_, H256>("setValue", "hi".to_owned()).unwrap().send().await.unwrap();
 
         // assert new value
-        let value = contract
-            .method::<_, String>("getValue", ())
-            .unwrap()
-            .call()
-            .await
-            .unwrap();
+        let value = contract.method::<_, String>("getValue", ()).unwrap().call().await.unwrap();
         assert_eq!(value, "hi");
 
         // assert previous value using block hash
-        let hash = client
-            .get_block(deployed_block)
-            .await
-            .unwrap()
-            .unwrap()
-            .hash
-            .unwrap();
+        let hash = client.get_block(deployed_block).await.unwrap().unwrap().hash.unwrap();
         let value = contract
             .method::<_, String>("getValue", ())
             .unwrap()
@@ -297,34 +257,28 @@ mod eth_tests {
     #[cfg(feature = "abigen")]
     async fn watch_events() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
-        let ganache = Ganache::new().spawn();
-        let client = connect(&ganache, 0);
+        let anvil = Anvil::new().spawn();
+        let client = connect(&anvil, 0);
         let contract = deploy(client.clone(), abi.clone(), bytecode).await;
 
         // We spawn the event listener:
         let event = contract.event::<ValueChanged>();
         let mut stream = event.stream().await.unwrap();
-        assert_eq!(stream.id, 1.into());
 
         // Also set up a subscription for the same thing
-        let ws = Provider::connect(ganache.ws_endpoint()).await.unwrap();
+        let ws = Provider::connect(anvil.ws_endpoint()).await.unwrap();
         let contract2 = ethers_contract::Contract::new(contract.address(), abi, ws);
         let event2 = contract2.event::<ValueChanged>();
         let mut subscription = event2.subscribe().await.unwrap();
-        assert_eq!(subscription.id, 2.into());
 
         let mut subscription_meta = event2.subscribe().await.unwrap().with_meta();
-        assert_eq!(subscription_meta.0.id, 3.into());
 
         let num_calls = 3u64;
 
         // and we make a few calls
         let num = client.get_block_number().await.unwrap();
         for i in 0..num_calls {
-            let call = contract
-                .method::<_, H256>("setValue", i.to_string())
-                .unwrap()
-                .legacy();
+            let call = contract.method::<_, H256>("setValue", i.to_string()).unwrap().legacy();
             let pending_tx = call.send().await.unwrap();
             let _receipt = pending_tx.await.unwrap();
         }
@@ -338,13 +292,7 @@ mod eth_tests {
             assert_eq!(log.new_value, log2.new_value);
             assert_eq!(log.new_value, i.to_string());
             assert_eq!(meta.block_number, num + i + 1);
-            let hash = client
-                .get_block(num + i + 1)
-                .await
-                .unwrap()
-                .unwrap()
-                .hash
-                .unwrap();
+            let hash = client.get_block(num + i + 1).await.unwrap().unwrap().hash.unwrap();
             assert_eq!(meta.block_hash, hash);
         }
     }
@@ -352,30 +300,22 @@ mod eth_tests {
     #[tokio::test]
     async fn watch_subscription_events_multiple_addresses() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
-        let ganache = Ganache::new().spawn();
-        let client = connect(&ganache, 0);
+        let anvil = Anvil::new().spawn();
+        let client = connect(&anvil, 0);
         let contract_1 = deploy(client.clone(), abi.clone(), bytecode.clone()).await;
         let contract_2 = deploy(client.clone(), abi.clone(), bytecode).await;
 
-        let ws = Provider::connect(ganache.ws_endpoint()).await.unwrap();
-        let filter = Filter::new().address(ValueOrArray::Array(vec![
-            contract_1.address(),
-            contract_2.address(),
-        ]));
+        let ws = Provider::connect(anvil.ws_endpoint()).await.unwrap();
+        let filter = Filter::new()
+            .address(ValueOrArray::Array(vec![contract_1.address(), contract_2.address()]));
         let mut stream = ws.subscribe_logs(&filter).await.unwrap();
 
         // and we make a few calls
-        let call = contract_1
-            .method::<_, H256>("setValue", "1".to_string())
-            .unwrap()
-            .legacy();
+        let call = contract_1.method::<_, H256>("setValue", "1".to_string()).unwrap().legacy();
         let pending_tx = call.send().await.unwrap();
         let _receipt = pending_tx.await.unwrap();
 
-        let call = contract_2
-            .method::<_, H256>("setValue", "2".to_string())
-            .unwrap()
-            .legacy();
+        let call = contract_2.method::<_, H256>("setValue", "2".to_string()).unwrap().legacy();
         let pending_tx = call.send().await.unwrap();
         let _receipt = pending_tx.await.unwrap();
 
@@ -389,11 +329,11 @@ mod eth_tests {
     #[tokio::test]
     async fn signer_on_node() {
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
-        // spawn ganache
-        let ganache = Ganache::new().spawn();
+        // spawn anvil
+        let anvil = Anvil::new().spawn();
 
         // connect
-        let provider = Provider::<Http>::try_from(ganache.endpoint())
+        let provider = Provider::<Http>::try_from(anvil.endpoint())
             .unwrap()
             .interval(std::time::Duration::from_millis(50u64));
 
@@ -413,12 +353,8 @@ mod eth_tests {
             .unwrap()
             .await
             .unwrap();
-        let value: String = contract
-            .method::<_, String>("getValue", ())
-            .unwrap()
-            .call()
-            .await
-            .unwrap();
+        let value: String =
+            contract.method::<_, String>("getValue", ()).unwrap().call().await.unwrap();
         assert_eq!(value, "hi");
     }
 
@@ -434,8 +370,8 @@ mod eth_tests {
         // get ABI and bytecode for the SimpleStorage contract
         let (abi, bytecode) = compile_contract("SimpleStorage", "SimpleStorage.sol");
 
-        // launch ganache
-        let ganache = Ganache::new().spawn();
+        // launch anvil
+        let anvil = Anvil::new().spawn();
 
         // Instantiate the clients. We assume that clients consume the provider and the wallet
         // (which makes sense), so for multi-client tests, you must clone the provider.
@@ -443,13 +379,13 @@ mod eth_tests {
         // `client2` is used to deploy the first SimpleStorage contract
         // `client3` is used to deploy the second SimpleStorage contract
         // `client4` is used to make the aggregate call
-        let addrs = ganache.addresses().to_vec();
+        let addrs = anvil.addresses().to_vec();
         let addr2 = addrs[1];
         let addr3 = addrs[2];
-        let client = connect(&ganache, 0);
-        let client2 = connect(&ganache, 1);
-        let client3 = connect(&ganache, 2);
-        let client4 = connect(&ganache, 3);
+        let client = connect(&anvil, 0);
+        let client2 = connect(&anvil, 1);
+        let client3 = connect(&anvil, 2);
+        let client4 = connect(&anvil, 3);
 
         // create a factory which will be used to deploy instances of the contract
         let multicall_factory =
@@ -458,13 +394,8 @@ mod eth_tests {
         let not_so_simple_factory =
             ContractFactory::new(not_so_simple_abi, not_so_simple_bytecode, client3.clone());
 
-        let multicall_contract = multicall_factory
-            .deploy(())
-            .unwrap()
-            .legacy()
-            .send()
-            .await
-            .unwrap();
+        let multicall_contract =
+            multicall_factory.deploy(()).unwrap().legacy().send().await.unwrap();
         let addr = multicall_contract.address();
 
         let simple_contract = simple_factory
@@ -491,6 +422,7 @@ mod eth_tests {
             .send()
             .await
             .unwrap();
+
         not_so_simple_contract
             .connect(client3.clone())
             .method::<_, H256>("setValue", "reset second".to_owned())
@@ -502,24 +434,15 @@ mod eth_tests {
 
         // get the calls for `value` and `last_sender` for both SimpleStorage contracts
         let value = simple_contract.method::<_, String>("getValue", ()).unwrap();
-        let value2 = not_so_simple_contract
-            .method::<_, (String, Address)>("getValues", ())
-            .unwrap();
-        let last_sender = simple_contract
-            .method::<_, Address>("lastSender", ())
-            .unwrap();
-        let last_sender2 = not_so_simple_contract
-            .method::<_, Address>("lastSender", ())
-            .unwrap();
+        let value2 =
+            not_so_simple_contract.method::<_, (String, Address)>("getValues", ()).unwrap();
+        let last_sender = simple_contract.method::<_, Address>("lastSender", ()).unwrap();
+        let last_sender2 = not_so_simple_contract.method::<_, Address>("lastSender", ()).unwrap();
 
         // initiate the Multicall instance and add calls one by one in builder style
         let mut multicall = Multicall::new(client4.clone(), Some(addr)).await.unwrap();
 
-        multicall
-            .add_call(value)
-            .add_call(value2)
-            .add_call(last_sender)
-            .add_call(last_sender2);
+        multicall.add_call(value).add_call(value2).add_call(last_sender).add_call(last_sender2);
 
         let return_data: (String, (String, Address), Address, Address) =
             multicall.call().await.unwrap();
@@ -545,16 +468,11 @@ mod eth_tests {
         // go. Now we will use the `.send()` functionality to broadcast a batch of transactions
         // in one go
         let mut multicall_send = multicall.clone();
-        multicall_send
-            .clear_calls()
-            .add_call(broadcast)
-            .add_call(broadcast2);
+        multicall_send.clear_calls().add_call(broadcast).add_call(broadcast2);
 
         // broadcast the transaction and wait for it to be mined
         let tx_hash = multicall_send.legacy().send().await.unwrap();
-        let _tx_receipt = PendingTransaction::new(tx_hash, client.provider())
-            .await
-            .unwrap();
+        let _tx_receipt = PendingTransaction::new(tx_hash, client.provider()).await.unwrap();
 
         // Do another multicall to check the updated return values
         // The `getValue` calls should return the last value we set in the batched broadcast
@@ -569,7 +487,7 @@ mod eth_tests {
         assert_eq!(return_data.2, multicall_contract.address());
         assert_eq!(return_data.3, multicall_contract.address());
 
-        let addrs = ganache.addresses();
+        let addrs = anvil.addresses();
         // query ETH balances of multiple addresses
         // these keys haven't been used to do any tx
         // so should have 100 ETH
@@ -578,10 +496,42 @@ mod eth_tests {
             .eth_balance_of(addrs[4])
             .eth_balance_of(addrs[5])
             .eth_balance_of(addrs[6]);
+
         let balances: (U256, U256, U256) = multicall.call().await.unwrap();
-        assert_eq!(balances.0, U256::from(100000000000000000000u128));
-        assert_eq!(balances.1, U256::from(100000000000000000000u128));
-        assert_eq!(balances.2, U256::from(100000000000000000000u128));
+        assert_eq!(balances.0, U256::from(10_000_000_000_000_000_000_000u128));
+        assert_eq!(balances.1, U256::from(10_000_000_000_000_000_000_000u128));
+        assert_eq!(balances.2, U256::from(10_000_000_000_000_000_000_000u128));
+
+        // clear multicall so we can test `call_raw` w/ >16 calls
+        multicall.clear_calls();
+
+        // clear the current value
+        simple_contract
+            .connect(client2.clone())
+            .method::<_, H256>("setValue", "many".to_owned())
+            .unwrap()
+            .legacy()
+            .send()
+            .await
+            .unwrap();
+
+        // build up a list of calls greater than the 16 max restriction
+        for i in 0..=16 {
+            let call = simple_contract.method::<_, String>("getValue", ()).unwrap();
+            multicall.add_call(call);
+        }
+
+        // must use `call_raw` as `.calls` > 16
+        let tokens = multicall.call_raw().await.unwrap();
+        // if want to use, must detokenize manually
+        let results: Vec<String> = tokens
+            .iter()
+            .map(|token| {
+                // decode manually using Tokenizable method
+                String::from_token(token.to_owned()).unwrap()
+            })
+            .collect();
+        assert_eq!(results, ["many"; 17]);
     }
 
     #[tokio::test]
@@ -606,7 +556,7 @@ mod eth_tests {
         struct FooBar {
             foo: I256,
             bar: U256,
-            fizz: Vec<u8>,
+            fizz: Bytes,
             buzz: [u8; 32],
             far: String,
             out: Address,
@@ -615,16 +565,17 @@ mod eth_tests {
         // get ABI and bytecode for the DeriveEip712Test contract
         let (abi, bytecode) = compile_contract("DeriveEip712Test", "DeriveEip712Test.sol");
 
-        // launch ganache
-        let ganache = Ganache::new().spawn();
+        // launch anvil
+        let anvil = Anvil::new().spawn();
 
-        let wallet: LocalWallet = ganache.keys()[0].clone().into();
+        let wallet: LocalWallet = anvil.keys()[0].clone().into();
 
-        let provider = Provider::<Http>::try_from(ganache.endpoint())
-            .expect("failed to instantiate provider from ganache endpoint")
+        let provider = Provider::<Http>::try_from(anvil.endpoint())
+            .expect("failed to instantiate provider from anvil endpoint")
             .interval(Duration::from_millis(10u64));
 
-        let client = SignerMiddleware::new(provider, wallet.clone());
+        let client =
+            SignerMiddleware::new_with_provider_chain(provider, wallet.clone()).await.unwrap();
         let client = Arc::new(client);
 
         let factory = ContractFactory::new(abi.clone(), bytecode.clone(), client.clone());
@@ -642,27 +593,24 @@ mod eth_tests {
         let contract = DeriveEip712Test::new(addr, client.clone());
 
         let foo_bar = FooBar {
-            foo: I256::from(10),
-            bar: U256::from(20),
-            fizz: b"fizz".to_vec(),
+            foo: I256::from(10u64),
+            bar: U256::from(20u64),
+            fizz: b"fizz".into(),
             buzz: keccak256("buzz"),
             far: String::from("space"),
             out: Address::from([0; 20]),
         };
 
         let derived_foo_bar = deriveeip712test_mod::FooBar {
-            foo: foo_bar.foo.clone(),
-            bar: foo_bar.bar.clone(),
+            foo: foo_bar.foo,
+            bar: foo_bar.bar,
             fizz: foo_bar.fizz.clone(),
-            buzz: foo_bar.buzz.clone(),
+            buzz: foo_bar.buzz,
             far: foo_bar.far.clone(),
-            out: foo_bar.out.clone(),
+            out: foo_bar.out,
         };
 
-        let sig = wallet
-            .sign_typed_data(&foo_bar)
-            .await
-            .expect("failed to sign typed data");
+        let sig = wallet.sign_typed_data(&foo_bar).await.expect("failed to sign typed data");
 
         let r = <[u8; 32]>::try_from(sig.r)
             .expect("failed to parse 'r' value from signature into [u8; 32]");
@@ -675,11 +623,8 @@ mod eth_tests {
             .call()
             .await
             .expect("failed to retrieve domain_separator from contract");
-        let type_hash = contract
-            .type_hash()
-            .call()
-            .await
-            .expect("failed to retrieve type_hash from contract");
+        let type_hash =
+            contract.type_hash().call().await.expect("failed to retrieve type_hash from contract");
         let struct_hash = contract
             .struct_hash(derived_foo_bar.clone())
             .call()

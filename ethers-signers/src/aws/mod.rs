@@ -3,8 +3,8 @@
 use ethers_core::{
     k256::ecdsa::{Error as K256Error, Signature as KSig, VerifyingKey},
     types::{
-        transaction::eip2718::TypedTransaction, transaction::eip712::Eip712, Address,
-        Signature as EthSig, H256,
+        transaction::{eip2718::TypedTransaction, eip712::Eip712},
+        Address, Signature as EthSig, H256,
     },
     utils::hash_message,
 };
@@ -83,7 +83,7 @@ pub enum AwsSignerError {
     #[error("{0}")]
     K256(#[from] K256Error),
     #[error("{0}")]
-    Spki(spki::der::Error),
+    Spki(spki::Error),
     #[error("{0}")]
     Other(String),
     #[error(transparent)]
@@ -100,8 +100,8 @@ impl From<String> for AwsSignerError {
     }
 }
 
-impl From<spki::der::Error> for AwsSignerError {
-    fn from(e: spki::der::Error) -> Self {
+impl From<spki::Error> for AwsSignerError {
+    fn from(e: spki::Error) -> Self {
         Self::Spki(e)
     }
 }
@@ -116,10 +116,7 @@ where
 {
     debug!("Dispatching get_public_key");
 
-    let req = GetPublicKeyRequest {
-        grant_tokens: None,
-        key_id: key_id.as_ref().to_owned(),
-    };
+    let req = GetPublicKeyRequest { grant_tokens: None, key_id: key_id.as_ref().to_owned() };
     trace!("{:?}", &req);
     let resp = kms.get_public_key(req).await;
     trace!("{:?}", &resp);
@@ -163,9 +160,7 @@ impl<'a> AwsSigner<'a> {
     where
         T: AsRef<str>,
     {
-        let pubkey = request_get_pubkey(kms, &key_id)
-            .await
-            .map(utils::decode_pubkey)??;
+        let pubkey = request_get_pubkey(kms, &key_id).await.map(utils::decode_pubkey)??;
         let address = verifying_key_to_address(&pubkey);
 
         debug!(
@@ -174,13 +169,7 @@ impl<'a> AwsSigner<'a> {
             hex::encode(&address)
         );
 
-        Ok(Self {
-            kms,
-            chain_id,
-            key_id: key_id.as_ref().to_owned(),
-            pubkey,
-            address,
-        })
+        Ok(Self { kms, chain_id, key_id: key_id.as_ref().to_owned(), pubkey, address })
     }
 
     /// Fetch the pubkey associated with a key id
@@ -188,9 +177,7 @@ impl<'a> AwsSigner<'a> {
     where
         T: AsRef<str>,
     {
-        Ok(request_get_pubkey(self.kms, key_id)
-            .await
-            .map(utils::decode_pubkey)??)
+        request_get_pubkey(self.kms, key_id).await.map(utils::decode_pubkey)?
     }
 
     /// Fetch the pubkey associated with this signer's key ID
@@ -207,9 +194,7 @@ impl<'a> AwsSigner<'a> {
     where
         T: AsRef<str>,
     {
-        Ok(request_sign_digest(self.kms, key_id, digest)
-            .await
-            .map(utils::decode_signature)??)
+        request_sign_digest(self.kms, key_id, digest).await.map(utils::decode_signature)?
     }
 
     /// Sign a digest with this signer's key
@@ -218,15 +203,19 @@ impl<'a> AwsSigner<'a> {
     }
 
     /// Sign a digest with this signer's key and add the eip155 `v` value
-    /// corresponding to this signer's chain_id
+    /// corresponding to the input chain_id
     #[instrument(err, skip(digest), fields(digest = %hex::encode(&digest)))]
-    async fn sign_digest_with_eip155(&self, digest: H256) -> Result<EthSig, AwsSignerError> {
+    async fn sign_digest_with_eip155(
+        &self,
+        digest: H256,
+        chain_id: u64,
+    ) -> Result<EthSig, AwsSignerError> {
         let sig = self.sign_digest(digest.into()).await?;
 
         let sig = utils::rsig_from_digest_bytes_trial_recovery(&sig, digest.into(), &self.pubkey);
 
         let mut sig = rsig_to_ethsig(&sig);
-        apply_eip155(&mut sig, self.chain_id);
+        apply_eip155(&mut sig, chain_id);
         Ok(sig)
     }
 }
@@ -245,26 +234,31 @@ impl<'a> super::Signer for AwsSigner<'a> {
         trace!("{:?}", message_hash);
         trace!("{:?}", message);
 
-        self.sign_digest_with_eip155(message_hash).await
+        self.sign_digest_with_eip155(message_hash, self.chain_id).await
     }
 
     #[instrument(err)]
     async fn sign_transaction(&self, tx: &TypedTransaction) -> Result<EthSig, Self::Error> {
-        let sighash = tx.sighash(self.chain_id);
-        self.sign_digest_with_eip155(sighash).await
+        let mut tx_with_chain = tx.clone();
+        let chain_id = tx_with_chain.chain_id().map(|id| id.as_u64()).unwrap_or(self.chain_id);
+        tx_with_chain.set_chain_id(chain_id);
+
+        let sighash = tx.sighash();
+        self.sign_digest_with_eip155(sighash, chain_id).await
     }
 
     async fn sign_typed_data<T: Eip712 + Send + Sync>(
         &self,
         payload: &T,
     ) -> Result<EthSig, Self::Error> {
-        let hash = payload
-            .encode_eip712()
-            .map_err(|e| Self::Error::Eip712Error(e.to_string()))?;
+        let digest =
+            payload.encode_eip712().map_err(|e| Self::Error::Eip712Error(e.to_string()))?;
 
-        let digest = self.sign_digest_with_eip155(hash.into()).await?;
+        let sig = self.sign_digest(digest).await?;
+        let sig = utils::rsig_from_digest_bytes_trial_recovery(&sig, digest, &self.pubkey);
+        let sig = rsig_to_ethsig(&sig);
 
-        Ok(digest)
+        Ok(sig)
     }
 
     fn address(&self) -> Address {
@@ -296,10 +290,7 @@ mod tests {
 
     #[allow(dead_code)]
     fn setup_tracing() {
-        tracing_subscriber::fmt()
-            .with_max_level(LevelFilter::DEBUG)
-            .try_init()
-            .unwrap();
+        tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).try_init().unwrap();
     }
 
     #[allow(dead_code)]

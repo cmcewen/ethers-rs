@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long we will wait for ganache to indicate that it is ready.
+/// Default amount of time we will wait for ganache to indicate that it is ready.
 const GANACHE_STARTUP_TIMEOUT_MILLIS: u64 = 10_000;
 
 /// A ganache CLI instance. Will close the instance when dropped.
@@ -51,7 +51,7 @@ impl GanacheInstance {
 
 impl Drop for GanacheInstance {
     fn drop(&mut self) {
-        let _ = self.pid.kill().expect("could not kill ganache");
+        self.pid.kill().expect("could not kill ganache");
     }
 }
 
@@ -83,6 +83,7 @@ pub struct Ganache {
     mnemonic: Option<String>,
     fork: Option<String>,
     args: Vec<String>,
+    startup_timeout: Option<u64>,
 }
 
 impl Ganache {
@@ -92,19 +93,29 @@ impl Ganache {
         Self::default()
     }
 
+    /// Sets the startup timeout which will be used when the `ganache-cli` instance is launched in
+    /// miliseconds. 10_000 miliseconds by default).
+    pub fn startup_timeout_millis<T: Into<u64>>(mut self, timeout: T) -> Self {
+        self.startup_timeout = Some(timeout.into());
+        self
+    }
+
     /// Sets the port which will be used when the `ganache-cli` instance is launched.
+    #[must_use]
     pub fn port<T: Into<u16>>(mut self, port: T) -> Self {
         self.port = Some(port.into());
         self
     }
 
     /// Sets the mnemonic which will be used when the `ganache-cli` instance is launched.
+    #[must_use]
     pub fn mnemonic<T: Into<String>>(mut self, mnemonic: T) -> Self {
         self.mnemonic = Some(mnemonic.into());
         self
     }
 
     /// Sets the block-time which will be used when the `ganache-cli` instance is launched.
+    #[must_use]
     pub fn block_time<T: Into<u64>>(mut self, block_time: T) -> Self {
         self.block_time = Some(block_time.into());
         self
@@ -114,18 +125,21 @@ impl Ganache {
     /// at a given block. Input should be the HTTP location and port of the other client,
     /// e.g. `http://localhost:8545`. You can optionally specify the block to fork from
     /// using an @ sign: `http://localhost:8545@1599200`
+    #[must_use]
     pub fn fork<T: Into<String>>(mut self, fork: T) -> Self {
         self.fork = Some(fork.into());
         self
     }
 
     /// Adds an argument to pass to the `ganache-cli`.
+    #[must_use]
     pub fn arg<T: Into<String>>(mut self, arg: T) -> Self {
         self.args.push(arg.into());
         self
     }
 
     /// Adds multiple arguments to pass to the `ganache-cli`.
+    #[must_use]
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -143,11 +157,7 @@ impl Ganache {
     pub fn spawn(self) -> GanacheInstance {
         let mut cmd = Command::new("ganache-cli");
         cmd.stdout(std::process::Stdio::piped());
-        let port = if let Some(port) = self.port {
-            port
-        } else {
-            unused_port()
-        };
+        let port = if let Some(port) = self.port { port } else { unused_port() };
         cmd.arg("-p").arg(port.to_string());
 
         if let Some(mnemonic) = self.mnemonic {
@@ -166,9 +176,7 @@ impl Ganache {
 
         let mut child = cmd.spawn().expect("couldnt start ganache-cli");
 
-        let stdout = child
-            .stdout
-            .expect("Unable to get stdout for ganache child process");
+        let stdout = child.stdout.expect("Unable to get stdout for ganache child process");
 
         let start = Instant::now();
         let mut reader = BufReader::new(stdout);
@@ -176,17 +184,18 @@ impl Ganache {
         let mut private_keys = Vec::new();
         let mut addresses = Vec::new();
         let mut is_private_key = false;
+
+        let startup_timeout =
+            Duration::from_millis(self.startup_timeout.unwrap_or(GANACHE_STARTUP_TIMEOUT_MILLIS));
         loop {
-            if start + Duration::from_millis(GANACHE_STARTUP_TIMEOUT_MILLIS) <= Instant::now() {
+            if start + startup_timeout <= Instant::now() {
                 panic!("Timed out waiting for ganache to start. Is ganache-cli installed?")
             }
 
             let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .expect("Failed to read line from ganache process");
-            if line.starts_with("Listening on") {
-                break;
+            reader.read_line(&mut line).expect("Failed to read line from ganache process");
+            if line.contains("Listening on") {
+                break
             }
 
             if line.starts_with("Private Keys") {
@@ -196,7 +205,7 @@ impl Ganache {
             if is_private_key && line.starts_with('(') {
                 let key_str = &line[6..line.len() - 1];
                 let key_hex = hex::decode(key_str).expect("could not parse as hex");
-                let key = K256SecretKey::from_bytes(&key_hex).expect("did not get private key");
+                let key = K256SecretKey::from_be_bytes(&key_hex).expect("did not get private key");
                 addresses.push(secret_key_to_address(&SigningKey::from(&key)));
                 private_keys.push(key);
             }
@@ -204,11 +213,23 @@ impl Ganache {
 
         child.stdout = Some(reader.into_inner());
 
-        GanacheInstance {
-            pid: child,
-            private_keys,
-            addresses,
-            port,
-        }
+        GanacheInstance { pid: child, private_keys, addresses, port }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn configurable_startup_timeout() {
+        Ganache::new().startup_timeout_millis(100000_u64).spawn();
+    }
+
+    #[test]
+    #[ignore]
+    fn default_startup_works() {
+        Ganache::new().spawn();
     }
 }

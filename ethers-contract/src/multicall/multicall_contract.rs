@@ -16,8 +16,12 @@ mod multicallcontract_mod {
     pub static MULTICALLCONTRACT_ABI: Lazy<Abi> = Lazy::new(|| {
         serde_json :: from_str ( "[{\"inputs\":[{\"components\":[{\"internalType\":\"address\",\"name\":\"target\",\"type\":\"address\"},{\"internalType\":\"bytes\",\"name\":\"callData\",\"type\":\"bytes\"}],\"internalType\":\"struct MulticallContract.Call[]\",\"name\":\"calls\",\"type\":\"tuple[]\"}],\"name\":\"aggregate\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"blockNumber\",\"type\":\"uint256\"},{\"internalType\":\"bytes[]\",\"name\":\"returnData\",\"type\":\"bytes[]\"}],\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"uint256\",\"name\":\"blockNumber\",\"type\":\"uint256\"}],\"name\":\"getBlockHash\",\"outputs\":[{\"internalType\":\"bytes32\",\"name\":\"blockHash\",\"type\":\"bytes32\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"getCurrentBlockCoinbase\",\"outputs\":[{\"internalType\":\"address\",\"name\":\"coinbase\",\"type\":\"address\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"getCurrentBlockDifficulty\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"difficulty\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"getCurrentBlockGasLimit\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"gaslimit\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"getCurrentBlockTimestamp\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"timestamp\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[{\"internalType\":\"address\",\"name\":\"addr\",\"type\":\"address\"}],\"name\":\"getEthBalance\",\"outputs\":[{\"internalType\":\"uint256\",\"name\":\"balance\",\"type\":\"uint256\"}],\"stateMutability\":\"view\",\"type\":\"function\"},{\"inputs\":[],\"name\":\"getLastBlockHash\",\"outputs\":[{\"internalType\":\"bytes32\",\"name\":\"blockHash\",\"type\":\"bytes32\"}],\"stateMutability\":\"view\",\"type\":\"function\"}]" ) . expect ( "invalid abi" )
     });
-    #[derive(Clone)]
     pub struct MulticallContract<M>(Contract<M>);
+    impl<M> Clone for MulticallContract<M> {
+        fn clone(&self) -> Self {
+            MulticallContract(self.0.clone())
+        }
+    }
     impl<M> std::ops::Deref for MulticallContract<M> {
         type Target = Contract<M>;
         fn deref(&self) -> &Self::Target {
@@ -26,12 +30,10 @@ mod multicallcontract_mod {
     }
     impl<M: Middleware> std::fmt::Debug for MulticallContract<M> {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.debug_tuple(stringify!(MulticallContract))
-                .field(&self.address())
-                .finish()
+            f.debug_tuple(stringify!(MulticallContract)).field(&self.address()).finish()
         }
     }
-    impl<'a, M: Middleware> MulticallContract<M> {
+    impl<M: Middleware> MulticallContract<M> {
         #[doc = r" Creates a new contract instance with the specified `ethers`"]
         #[doc = r" client at the given `Address`. The contract derefs to a `ethers::Contract`"]
         #[doc = r" object"]
@@ -43,8 +45,8 @@ mod multicallcontract_mod {
         #[doc = "Calls the contract's `aggregate` (0x252dba42) function"]
         pub fn aggregate(
             &self,
-            calls: Vec<(Address, Vec<u8>)>,
-        ) -> ContractCall<M, (U256, Vec<Vec<u8>>)> {
+            calls: Vec<(Address, Bytes)>,
+        ) -> ContractCall<M, (U256, Vec<Bytes>)> {
             self.0
                 .method_hash([37, 45, 186, 66], calls)
                 .expect("method not found (this should never happen)")

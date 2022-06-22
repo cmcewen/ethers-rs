@@ -5,14 +5,20 @@ use crate::spanned::{ParseInner, Spanned};
 use ethers_contract_abigen::Abigen;
 use ethers_core::abi::{Function, FunctionExt, Param, StateMutability};
 
-use ethers_contract_abigen::contract::{Context, ExpandedContract};
+use ethers_contract_abigen::{
+    contract::{Context, ExpandedContract},
+    multi::MultiExpansion,
+};
 use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::{quote, ToTokens};
-use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use syn::ext::IdentExt;
-use syn::parse::{Error as ParseError, Parse, ParseStream, Result as ParseResult};
-use syn::{braced, parenthesized, Ident, LitStr, Path, Token};
+use quote::ToTokens;
+use std::{collections::HashSet, error::Error};
+use syn::{
+    braced,
+    ext::IdentExt,
+    parenthesized,
+    parse::{Error as ParseError, Parse, ParseStream, Result as ParseResult},
+    Ident, LitStr, Path, Token,
+};
 
 /// A series of `ContractArgs` separated by `;`
 #[cfg_attr(test, derive(Debug))]
@@ -22,7 +28,6 @@ pub(crate) struct Contracts {
 
 impl Contracts {
     pub(crate) fn expand(self) -> Result<TokenStream2, syn::Error> {
-        let mut tokens = TokenStream2::new();
         let mut expansions = Vec::with_capacity(self.inner.len());
 
         // expand all contracts
@@ -32,58 +37,14 @@ impl Contracts {
             expansions.push(contract);
         }
 
-        // merge all types if more than 1 contract
-        if expansions.len() > 1 {
-            // check for type conflicts
-            let mut conflicts: HashMap<String, Vec<usize>> = HashMap::new();
-            for (idx, (_, ctx)) in expansions.iter().enumerate() {
-                for type_identifier in ctx.internal_structs().rust_type_names().keys() {
-                    conflicts
-                        .entry(type_identifier.clone())
-                        .or_insert_with(|| Vec::with_capacity(1))
-                        .push(idx);
-                }
-            }
-
-            let mut shared_types = TokenStream2::new();
-            let shared_types_mdoule = quote!(__shared_types);
-            let mut dirty = HashSet::new();
-            // resolve type conflicts
-            for (id, contracts) in conflicts.iter().filter(|(_, c)| c.len() > 1) {
-                // extract the shared type once
-                shared_types.extend(expansions[contracts[0]].1.struct_definition(id).unwrap());
-                // remove the shared type
-                for contract in contracts.iter().copied() {
-                    expansions[contract].1.remove_struct(id);
-                    dirty.insert(contract);
-                }
-            }
-
-            // regenerate all struct definitions that were hit and adjust imports
-            for contract in dirty {
-                let (expanded, ctx) = &mut expansions[contract];
-                expanded.abi_structs = ctx.abi_structs().unwrap();
-                expanded
-                    .imports
-                    .extend(quote!( pub use super::#shared_types_mdoule::*;));
-            }
-            tokens.extend(quote! {
-                pub mod #shared_types_mdoule {
-                    #shared_types
-                }
-            });
-        }
-
-        tokens.extend(expansions.into_iter().map(|(exp, _)| exp.into_tokens()));
-        Ok(tokens)
+        // expand all contract expansions
+        Ok(MultiExpansion::new(expansions).expand_inplace())
     }
 
     fn expand_contract(
         contract: ContractArgs,
     ) -> Result<(ExpandedContract, Context), Box<dyn Error>> {
-        let contract = contract.into_builder()?;
-        let ctx = Context::from_abigen(contract)?;
-        Ok((ctx.expand()?, ctx))
+        Ok(contract.into_builder()?.expand()?)
     }
 }
 
@@ -111,9 +72,9 @@ impl ContractArgs {
 
         for parameter in self.parameters.into_iter() {
             builder = match parameter {
-                Parameter::Methods(methods) => methods.into_iter().fold(builder, |builder, m| {
-                    builder.add_method_alias(m.signature, m.alias)
-                }),
+                Parameter::Methods(methods) => methods
+                    .into_iter()
+                    .fold(builder, |builder, m| builder.add_method_alias(m.signature, m.alias)),
                 Parameter::EventDerives(derives) => derives
                     .into_iter()
                     .fold(builder, |builder, derive| builder.add_event_derive(derive)),
@@ -149,11 +110,11 @@ impl ParseInner for ContractArgs {
 
             loop {
                 if input.is_empty() {
-                    break;
+                    break
                 }
                 let lookahead = input.lookahead1();
                 if lookahead.peek(Token![;]) {
-                    break;
+                    break
                 }
                 let param = Parameter::parse(input)?;
                 parameters.push(param);
@@ -164,14 +125,7 @@ impl ParseInner for ContractArgs {
             }
         }
 
-        Ok((
-            span,
-            ContractArgs {
-                name,
-                abi,
-                parameters,
-            },
-        ))
+        Ok((span, ContractArgs { name, abi, parameters }))
     }
 }
 
@@ -201,13 +155,13 @@ impl Parse for Parameter {
                             return Err(ParseError::new(
                                 method.span(),
                                 "duplicate method signature in `abigen!` macro invocation",
-                            ));
+                            ))
                         }
                         if !aliases.insert(method.alias.clone()) {
                             return Err(ParseError::new(
                                 method.span(),
                                 "duplicate method alias in `abigen!` macro invocation",
-                            ));
+                            ))
                         }
                         methods.push(method.into_inner())
                     }
@@ -259,11 +213,7 @@ impl Parse for Method {
                 .map(|ident| {
                     let kind = serde_json::from_value(serde_json::json!(&ident.to_string()))
                         .map_err(|err| ParseError::new(ident.span(), err))?;
-                    Ok(Param {
-                        name: "".into(),
-                        kind,
-                        internal_type: None,
-                    })
+                    Ok(Param { name: "".into(), kind, internal_type: None })
                 })
                 .collect::<ParseResult<Vec<_>>>()?;
 
@@ -276,7 +226,7 @@ impl Parse for Method {
                 //   affect its signature.
                 outputs: vec![],
                 state_mutability: StateMutability::NonPayable,
-                constant: false,
+                constant: None,
             }
         };
         let signature = function.abi_signature();
@@ -319,21 +269,12 @@ mod tests {
 
     #[allow(unused)]
     fn method(signature: &str, alias: &str) -> Method {
-        Method {
-            signature: signature.into(),
-            alias: alias.into(),
-        }
+        Method { signature: signature.into(), alias: alias.into() }
     }
 
     fn parse_contracts(s: TokenStream2) -> Vec<ContractArgs> {
         use syn::parse::Parser;
-        Contracts::parse
-            .parse2(s)
-            .unwrap()
-            .inner
-            .into_iter()
-            .map(|(_, c)| c)
-            .collect::<Vec<_>>()
+        Contracts::parse.parse2(s).unwrap().inner.into_iter().map(|(_, c)| c).collect::<Vec<_>>()
     }
 
     #[test]

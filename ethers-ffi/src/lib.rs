@@ -6,18 +6,20 @@ use coins_bip32::{
   path::DerivationPath,
 };
 use coins_bip39::{English, Mnemonic};
-use ethers_core::types::{Address, H256};
-use ethers_core::utils::{keccak256, to_checksum};
+use ethers_core::{
+  types::{Address, H256},
+  utils::{keccak256, to_checksum},
+};
 use ethers_signers::{LocalWallet, Signer};
-use k256::ecdsa::VerifyingKey;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::{ecdsa::VerifyingKey, elliptic_curve::sec1::ToEncodedPoint};
 
 use ffi_convert::*;
 use futures_executor::block_on;
 use libc::c_char;
-use std::ffi::CStr;
-use std::ffi::CString;
-use std::str::FromStr;
+use std::{
+  ffi::{CStr, CString},
+  str::FromStr,
+};
 
 const DEFAULT_DERIVATION_PATH_PREFIX: &str = "m/44'/60'/0'/0/";
 
@@ -31,7 +33,7 @@ fn verifying_key_to_checksummed_address(key: VerifyingKey) -> String {
   let hash = keccak256(&public_key[1..]);
   let address = Address::from_slice(&hash[12..]);
   let checksum = to_checksum(&address, None);
-  return checksum;
+  return checksum
 }
 
 pub struct PrivateKey {
@@ -74,19 +76,13 @@ pub struct CSignedTransaction {
 #[no_mangle]
 pub extern "C" fn generate_mnemonic() -> CMnemonicAndAddress {
   let rng = &mut rand::thread_rng();
-  let mnemonic = Mnemonic::<English>::new_with_count(rng, 12)
-    .unwrap()
-    .to_phrase()
-    .unwrap();
+  let mnemonic = Mnemonic::<English>::new_with_count(rng, 12).unwrap().to_phrase().unwrap();
   let mnem_clone = mnemonic.clone();
   let private_key = derive_private_key(mnemonic, 0);
 
-  let mnemonic_struct = MnemonicAndAddress {
-    mnemonic: mnem_clone,
-    address: private_key.address,
-  };
+  let mnemonic_struct = MnemonicAndAddress { mnemonic: mnem_clone, address: private_key.address };
 
-  return CMnemonicAndAddress::c_repr_of(mnemonic_struct).unwrap();
+  return CMnemonicAndAddress::c_repr_of(mnemonic_struct).unwrap()
 }
 
 #[no_mangle]
@@ -96,21 +92,15 @@ pub extern "C" fn mnemonic_free(mnemonic: CMnemonicAndAddress) {
 
 fn derive_private_key(mnemonic_str: String, index: u32) -> PrivateKey {
   let mnemonic = Mnemonic::<English>::new_from_phrase(&mnemonic_str).unwrap();
-  let derivation_path = DerivationPath::from_str(&format!(
-    "{}{}",
-    DEFAULT_DERIVATION_PATH_PREFIX,
-    index.to_string()
-  ))
-  .unwrap();
+  let derivation_path =
+    DerivationPath::from_str(&format!("{}{}", DEFAULT_DERIVATION_PATH_PREFIX, index.to_string()))
+      .unwrap();
   let private_key = mnemonic.derive_key(derivation_path, None).unwrap();
   let private_key_str = MainnetEncoder::xpriv_to_base58(&private_key).unwrap();
   let verifying_key = private_key.verify_key();
   let address = verifying_key_to_checksummed_address(verifying_key.key);
 
-  return PrivateKey {
-    private_key: private_key_str,
-    address: address,
-  };
+  return PrivateKey { private_key: private_key_str, address }
 }
 
 #[no_mangle]
@@ -121,7 +111,7 @@ pub extern "C" fn private_key_from_mnemonic(mnemonic: *const c_char, index: u32)
   };
   let mnemonic_str = mnemonic_c_str.to_str().unwrap();
   let priv_struct = derive_private_key(mnemonic_str.to_string(), index);
-  return CPrivateKey::c_repr_of(priv_struct).unwrap();
+  return CPrivateKey::c_repr_of(priv_struct).unwrap()
 }
 
 #[no_mangle]
@@ -139,7 +129,7 @@ pub extern "C" fn wallet_from_private_key(private_key: *const c_char) -> *mut Lo
   let xpriv = MainnetEncoder::xpriv_from_base58(private_key_str).unwrap();
   let wallet: LocalWallet = LocalWallet::from(xpriv.key);
   println!("Created wallet with address: {}", wallet.address());
-  return opaque_pointer::raw(wallet);
+  return opaque_pointer::raw(wallet)
 }
 
 #[no_mangle]
@@ -166,13 +156,11 @@ pub extern "C" fn sign_tx_with_wallet(
   let fixed_arr: [u8; 32] = hex_slice.try_into().unwrap();
   let tx_hash = H256::from(fixed_arr);
 
-  let signature = wallet.sign_hash(tx_hash, true);
+  let signature = wallet.sign_hash(tx_hash);
   let sig_string = format!("{}", signature);
 
-  let t = SignedTransaction {
-    signature: sig_string,
-  };
-  return CSignedTransaction::c_repr_of(t).unwrap();
+  let t = SignedTransaction { signature: sig_string };
+  return CSignedTransaction::c_repr_of(t).unwrap()
 }
 
 #[no_mangle]
@@ -191,7 +179,7 @@ pub extern "C" fn sign_message_with_wallet(
 
   let sig_string = format!("{}", signature);
   let sig_c_str = CString::new(sig_string).unwrap();
-  return sig_c_str.into_raw();
+  return sig_c_str.into_raw()
 }
 
 #[no_mangle]
@@ -215,18 +203,18 @@ pub extern "C" fn sign_hash_with_wallet(
   let fixed_arr: [u8; 32] = hex_slice.try_into().unwrap();
   let hash = H256::from(fixed_arr);
 
-  let signature = wallet.sign_hash(hash, eip155);
+  let signature = wallet.sign_hash(hash);
 
   let sig_string = format!("{}", signature);
   let sig_c_str = CString::new(sig_string).unwrap();
-  return sig_c_str.into_raw();
+  return sig_c_str.into_raw()
 }
 
 #[no_mangle]
 pub extern "C" fn string_free(string: *mut c_char) {
   unsafe {
     if string.is_null() {
-      return;
+      return
     }
     CString::from_raw(string)
   };

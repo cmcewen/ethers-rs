@@ -1,18 +1,23 @@
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap, HashMap};
 
-use anyhow::{Context as _, Result};
+use eyre::{Context as _, Result};
 use inflector::Inflector;
 use proc_macro2::{Literal, TokenStream};
 use quote::quote;
 use syn::Ident;
 
-use ethers_core::abi::ParamType;
 use ethers_core::{
-    abi::{Function, FunctionExt, Param},
+    abi::{Function, FunctionExt, Param, ParamType},
+    macros::{ethers_contract_crate, ethers_core_crate},
     types::Selector,
 };
 
 use super::{types, util, Context};
+
+/// The maximum amount of overloaded functions that are attempted to auto aliased with their param
+/// name. If there is a function that with `NAME_ALIASING_OVERLOADED_FUNCTIONS_CAP` overloads then
+/// all functions are aliased with their index, like `log0, log1, log2,....`
+const NAME_ALIASING_OVERLOADED_FUNCTIONS_CAP: usize = 3;
 
 /// Expands a context into a method struct containing all the generated bindings
 /// to the Solidity contract methods.
@@ -23,8 +28,7 @@ impl Context {
         let sorted_functions: BTreeMap<_, _> = self.abi.functions.iter().collect();
         let functions = sorted_functions
             .values()
-            .map(std::ops::Deref::deref)
-            .flatten()
+            .flat_map(std::ops::Deref::deref)
             .map(|function| {
                 let signature = function.abi_signature();
                 self.expand_function(function, aliases.get(&signature).cloned())
@@ -38,14 +42,69 @@ impl Context {
         Ok((function_impls, call_structs))
     }
 
+    /// Returns all deploy (constructor) implementations
+    pub(crate) fn deployment_methods(&self) -> TokenStream {
+        if self.contract_bytecode.is_none() {
+            // don't generate deploy if no bytecode
+            return quote! {}
+        }
+        let ethers_core = ethers_core_crate();
+        let ethers_contract = ethers_contract_crate();
+
+        let abi_name = self.inline_abi_ident();
+        let get_abi = quote! {
+            #abi_name.clone()
+        };
+
+        let bytecode_name = self.inline_bytecode_ident();
+        let get_bytecode = quote! {
+            #bytecode_name.clone().into()
+        };
+
+        let deploy = quote! {
+            /// Constructs the general purpose `Deployer` instance based on the provided constructor arguments and sends it.
+            /// Returns a new instance of a deployer that returns an instance of this contract after sending the transaction
+            ///
+            /// Notes:
+            /// 1. If there are no constructor arguments, you should pass `()` as the argument.
+            /// 1. The default poll duration is 7 seconds.
+            /// 1. The default number of confirmations is 1 block.
+            ///
+            ///
+            /// # Example
+            ///
+            /// Generate contract bindings with `abigen!` and deploy a new contract instance.
+            ///
+            /// *Note*: this requires a `bytecode` and `abi` object in the `greeter.json` artifact.
+            ///
+            /// ```ignore
+            /// # async fn deploy<M: ethers::providers::Middleware>(client: ::std::sync::Arc<M>) {
+            ///     abigen!(Greeter,"../greeter.json");
+            ///
+            ///    let greeter_contract = Greeter::deploy(client, "Hello world!".to_string()).unwrap().send().await.unwrap();
+            ///    let msg = greeter_contract.greet().call().await.unwrap();
+            /// # }
+            /// ```
+            pub fn deploy<T: #ethers_core::abi::Tokenize >(client: ::std::sync::Arc<M>, constructor_args: T) -> Result<#ethers_contract::builders::ContractDeployer<M, Self>, #ethers_contract::ContractError<M>> {
+               let factory = #ethers_contract::ContractFactory::new(#get_abi, #get_bytecode, client);
+               let deployer = factory.deploy(constructor_args)?;
+               let deployer = #ethers_contract::ContractDeployer::new(deployer);
+               Ok(deployer)
+            }
+
+        };
+
+        deploy
+    }
+
     /// Expands to the corresponding struct type based on the inputs of the given function
     fn expand_call_struct(
         &self,
         function: &Function,
-        alias: Option<&Ident>,
+        alias: Option<&MethodAlias>,
     ) -> Result<TokenStream> {
         let call_name = expand_call_struct_name(function, alias);
-        let fields = self.expand_input_pairs(function)?;
+        let fields = self.expand_input_params(function)?;
         // expand as a tuple if all fields are anonymous
         let all_anonymous_fields = function.inputs.iter().all(|input| input.name.is_empty());
         let call_type_definition = if all_anonymous_fields {
@@ -64,7 +123,7 @@ impl Context {
             function.selector()
         );
         let abi_signature_doc = util::expand_doc(&doc);
-        let ethers_contract = util::ethers_contract_crate();
+        let ethers_contract = ethers_contract_crate();
         // use the same derives as for events
         let derives = util::expand_derives(&self.event_derives);
 
@@ -77,11 +136,10 @@ impl Context {
     }
 
     /// Expands all structs
-    fn expand_call_structs(&self, aliases: BTreeMap<String, Ident>) -> Result<TokenStream> {
+    fn expand_call_structs(&self, aliases: BTreeMap<String, MethodAlias>) -> Result<TokenStream> {
         let mut struct_defs = Vec::new();
         let mut struct_names = Vec::new();
         let mut variant_names = Vec::new();
-
         for function in self.abi.functions.values().flatten() {
             let signature = function.abi_signature();
             let alias = aliases.get(&signature);
@@ -96,25 +154,28 @@ impl Context {
 
         if struct_defs.len() <= 1 {
             // no need for an enum
-            return Ok(struct_def_tokens);
+            return Ok(struct_def_tokens)
         }
 
-        let ethers_core = util::ethers_core_crate();
-        let ethers_contract = util::ethers_contract_crate();
+        let ethers_core = ethers_core_crate();
+        let ethers_contract = ethers_contract_crate();
 
+        // use the same derives as for events
+        let derives = util::expand_derives(&self.event_derives);
         let enum_name = self.expand_calls_enum_name();
+
         Ok(quote! {
             #struct_def_tokens
 
-           #[derive(Debug, Clone, PartialEq, Eq, #ethers_contract::EthAbiType)]
+           #[derive(Debug, Clone, PartialEq, Eq, #ethers_contract::EthAbiType, #derives)]
             pub enum #enum_name {
                 #(#variant_names(#struct_names)),*
             }
 
-        impl  #ethers_contract::AbiDecode for #enum_name {
-            fn decode(data: impl AsRef<[u8]>) -> Result<Self, #ethers_contract::AbiError> {
+        impl  #ethers_core::abi::AbiDecode for #enum_name {
+            fn decode(data: impl AsRef<[u8]>) -> Result<Self, #ethers_core::abi::AbiError> {
                  #(
-                    if let Ok(decoded) = <#struct_names as #ethers_contract::AbiDecode>::decode(data.as_ref()) {
+                    if let Ok(decoded) = <#struct_names as #ethers_core::abi::AbiDecode>::decode(data.as_ref()) {
                         return Ok(#enum_name::#variant_names(decoded))
                     }
                 )*
@@ -122,8 +183,8 @@ impl Context {
             }
         }
 
-         impl  #ethers_contract::AbiEncode for #enum_name {
-            fn encode(self) -> Result<#ethers_core::types::Bytes, #ethers_contract::AbiError> {
+         impl  #ethers_core::abi::AbiEncode for #enum_name {
+            fn encode(self) -> Vec<u8> {
                 match self {
                     #(
                         #enum_name::#variant_names(element) => element.encode()
@@ -155,18 +216,36 @@ impl Context {
 
     /// The name ident of the calls enum
     fn expand_calls_enum_name(&self) -> Ident {
-        util::ident(&format!("{}Calls", self.contract_name.to_string()))
+        util::ident(&format!("{}Calls", self.contract_ident))
     }
 
     /// Expands to the `name : type` pairs of the function's inputs
-    fn expand_input_pairs(&self, fun: &Function) -> Result<Vec<(TokenStream, TokenStream)>> {
+    fn expand_input_params(&self, fun: &Function) -> Result<Vec<(TokenStream, TokenStream)>> {
         let mut args = Vec::with_capacity(fun.inputs.len());
         for (idx, param) in fun.inputs.iter().enumerate() {
             let name = util::expand_input_name(idx, &param.name);
-            let ty = self.expand_input_param(fun, &param.name, &param.kind)?;
+            let ty = self.expand_input_param_type(fun, &param.name, &param.kind)?;
             args.push((name, ty));
         }
         Ok(args)
+    }
+
+    /// Expands to the return type of a function
+    fn expand_outputs(&self, fun: &Function) -> Result<TokenStream> {
+        let mut outputs = Vec::with_capacity(fun.outputs.len());
+        for param in fun.outputs.iter() {
+            let ty = self.expand_output_param_type(fun, param, &param.kind)?;
+            outputs.push(ty);
+        }
+
+        let return_ty = match outputs.len() {
+            0 => quote! { () },
+            1 => outputs[0].clone(),
+            _ => {
+                quote! { (#( #outputs ),*) }
+            }
+        };
+        Ok(return_ty)
     }
 
     /// Expands the arguments for the call that eventually calls the contract
@@ -198,7 +277,8 @@ impl Context {
         Ok(call_args)
     }
 
-    fn expand_input_param(
+    /// returns the Tokenstream for the corresponding rust type of the param
+    fn expand_input_param_type(
         &self,
         fun: &Function,
         param: &str,
@@ -206,20 +286,19 @@ impl Context {
     ) -> Result<TokenStream> {
         match kind {
             ParamType::Array(ty) => {
-                let ty = self.expand_input_param(fun, param, ty)?;
+                let ty = self.expand_input_param_type(fun, param, ty)?;
                 Ok(quote! {
                     ::std::vec::Vec<#ty>
                 })
             }
             ParamType::FixedArray(ty, size) => {
-                let ty = self.expand_input_param(fun, param, ty)?;
+                let ty = self.expand_input_param_type(fun, param, ty)?;
                 let size = *size;
                 Ok(quote! {[#ty; #size]})
             }
             ParamType::Tuple(_) => {
-                let ty = if let Some(rust_struct_name) = self
-                    .internal_structs
-                    .get_function_input_struct_type(&fun.name, param)
+                let ty = if let Some(rust_struct_name) =
+                    self.internal_structs.get_function_input_struct_type(&fun.name, param)
                 {
                     let ident = util::ident(rust_struct_name);
                     quote! {#ident}
@@ -232,24 +311,60 @@ impl Context {
         }
     }
 
+    /// returns the Tokenstream for the corresponding rust type of the output param
+    fn expand_output_param_type(
+        &self,
+        fun: &Function,
+        param: &Param,
+        kind: &ParamType,
+    ) -> Result<TokenStream> {
+        match kind {
+            ParamType::Array(ty) => {
+                let ty = self.expand_output_param_type(fun, param, ty)?;
+                Ok(quote! {
+                    ::std::vec::Vec<#ty>
+                })
+            }
+            ParamType::FixedArray(ty, size) => {
+                let ty = self.expand_output_param_type(fun, param, ty)?;
+                let size = *size;
+                Ok(quote! {[#ty; #size]})
+            }
+            ParamType::Tuple(_) => {
+                let ty = if let Some(rust_struct_name) =
+                    param.internal_type.as_ref().and_then(|s| {
+                        self.internal_structs.get_function_output_struct_type(&fun.name, s)
+                    }) {
+                    let ident = util::ident(rust_struct_name);
+                    quote! {#ident}
+                } else {
+                    types::expand(kind)?
+                };
+                Ok(ty)
+            }
+            _ => types::expand(kind),
+        }
+    }
+
     /// Expands a single function with the given alias
-    fn expand_function(&self, function: &Function, alias: Option<Ident>) -> Result<TokenStream> {
-        let name = alias.unwrap_or_else(|| util::safe_ident(&function.name.to_snake_case()));
+    fn expand_function(
+        &self,
+        function: &Function,
+        alias: Option<MethodAlias>,
+    ) -> Result<TokenStream> {
+        let ethers_contract = ethers_contract_crate();
+
+        let name = expand_function_name(function, alias.as_ref());
         let selector = expand_selector(function.selector());
 
-        // TODO use structs
-        let outputs = expand_fn_outputs(&function.outputs)?;
+        let contract_args = self.expand_contract_call_args(function)?;
+        let function_params =
+            self.expand_input_params(function)?.into_iter().map(|(name, ty)| quote! { #name: #ty });
+        let function_params = quote! { #( , #function_params )* };
 
-        let ethers_contract = util::ethers_contract_crate();
+        let outputs = self.expand_outputs(function)?;
 
         let result = quote! { #ethers_contract::builders::ContractCall<M, #outputs> };
-
-        let contract_args = self.expand_contract_call_args(function)?;
-        let function_params = self
-            .expand_input_pairs(function)?
-            .into_iter()
-            .map(|(name, ty)| quote! { #name: #ty });
-        let function_params = quote! { #( , #function_params )* };
 
         let doc = util::expand_doc(&format!(
             "Calls the contract's `{}` (0x{}) function",
@@ -274,83 +389,202 @@ impl Context {
     // The first function or the function with the least amount of arguments should
     // be named as in the ABI, the following functions suffixed with _with_ +
     // additional_params[0].name + (_and_(additional_params[1+i].name))*
-    fn get_method_aliases(&self) -> Result<BTreeMap<String, Ident>> {
+    fn get_method_aliases(&self) -> Result<BTreeMap<String, MethodAlias>> {
         let mut aliases = self.method_aliases.clone();
+
+        // it might be the case that there are functions with different capitalization so we sort
+        // them all by lc name first
+        let mut all_functions = HashMap::new();
+        for function in self.abi.functions() {
+            all_functions
+                .entry(util::safe_snake_case_ident(&function.name))
+                .or_insert_with(Vec::new)
+                .push(function);
+        }
+
         // find all duplicates, where no aliases where provided
-        for functions in self.abi.functions.values() {
-            if functions
-                .iter()
-                .filter(|f| !aliases.contains_key(&f.abi_signature()))
-                .count()
-                <= 1
-            {
-                // no conflicts
-                continue;
+        for functions in all_functions.values() {
+            if functions.iter().filter(|f| !aliases.contains_key(&f.abi_signature())).count() <= 1 {
+                // no overloads, hence no conflicts
+                continue
             }
 
+            let num_functions = functions.len();
             // sort functions by number of inputs asc
-            let mut functions = functions.iter().collect::<Vec<_>>();
-            functions.sort_by(|f1, f2| f1.inputs.len().cmp(&f2.inputs.len()));
-            let prev = functions[0];
-            for duplicate in functions.into_iter().skip(1) {
-                // attempt to find diff in the input arguments
-                let diff = duplicate
-                    .inputs
-                    .iter()
-                    .filter(|i1| prev.inputs.iter().all(|i2| *i1 != i2))
-                    .collect::<Vec<_>>();
+            let mut functions = functions.iter().enumerate().collect::<Vec<_>>();
+            functions.sort_by(|(_, f1), (_, f2)| f1.inputs.len().cmp(&f2.inputs.len()));
 
+            // the `functions` are now mapped with their index according as defined in the ABI, but
+            // we always want the zero arg function (`log()`) to be `log0`, even if it defined after
+            // an overloaded function like `log(address)`
+            if num_functions > NAME_ALIASING_OVERLOADED_FUNCTIONS_CAP {
+                // lots of overloads, so we set `log()` to index 0, and shift all fun
+                for (idx, _) in &mut functions[1..] {
+                    *idx += 1;
+                }
+                functions[0].0 = 0;
+            } else {
+                // for few overloads we stick entirely to the input len order
+                for (idx, (f_idx, _)) in functions.iter_mut().enumerate() {
+                    *f_idx = idx;
+                }
+            }
+
+            // the first function will be the function with the least amount of inputs, like log()
+            // and is the baseline for the diff
+            let (first_fun_idx, first_fun) = functions[0];
+
+            // assuming here that if there is an overloaded function with nameless params like
+            // `log;, log(string); log(string, string)` `log()` it should also be
+            // aliased as well with its index to `log0`
+            let mut needs_alias_for_first_fun_using_idx = false;
+
+            // all the overloaded functions together with their diffs compare to the `first_fun`
+            let mut diffs = Vec::new();
+
+            /// helper function that checks if there are any conflicts due to parameter names
+            fn name_conflicts(idx: usize, diffs: &[(usize, Vec<&Param>, &&Function)]) -> bool {
+                let diff = &diffs.iter().find(|(i, _, _)| *i == idx).expect("diff exists").1;
+
+                for (_, other, _) in diffs.iter().filter(|(i, _, _)| *i != idx) {
+                    let (a, b) =
+                        if other.len() > diff.len() { (other, diff) } else { (diff, other) };
+
+                    if a.iter()
+                        .all(|d| b.iter().any(|o| o.name.to_snake_case() == d.name.to_snake_case()))
+                    {
+                        return true
+                    }
+                }
+                false
+            }
+            // compare each overloaded function with the `first_fun`
+            for (idx, overloaded_fun) in functions.into_iter().skip(1) {
+                // attempt to find diff in the input arguments
+                let mut diff = Vec::new();
+                let mut same_params = true;
+                for (idx, i1) in overloaded_fun.inputs.iter().enumerate() {
+                    if first_fun.inputs.iter().all(|i2| i1 != i2) {
+                        diff.push(i1);
+                        same_params = false;
+                    } else {
+                        // check for cases like `log(string); log(string, string)` by keep track of
+                        // same order
+                        if same_params && idx + 1 > first_fun.inputs.len() {
+                            diff.push(i1);
+                        }
+                    }
+                }
+                diffs.push((idx, diff, overloaded_fun));
+            }
+
+            for (idx, diff, overloaded_fun) in &diffs {
                 let alias = match diff.len() {
                     0 => {
-                        // this should not happen since functions with same name and input are
-                        // illegal
-                        anyhow::bail!(
+                        // this may happen if there are functions with different casing,
+                        // like `INDEX`and `index`
+
+                        // this should not happen since functions with same
+                        // name and inputs are illegal
+                        eyre::ensure!(
+                            overloaded_fun.name != first_fun.name,
                             "Function with same name and parameter types defined twice: {}",
-                            duplicate.name
+                            overloaded_fun.name
                         );
+
+                        let overloaded_id = overloaded_fun.name.to_snake_case();
+                        let first_fun_id = first_fun.name.to_snake_case();
+                        if first_fun_id != overloaded_id {
+                            // no conflict
+                            overloaded_id
+                        } else {
+                            let overloaded_alias = MethodAlias {
+                                function_name: util::safe_ident(&overloaded_fun.name),
+                                struct_name: util::safe_ident(&overloaded_fun.name),
+                            };
+                            aliases.insert(overloaded_fun.abi_signature(), overloaded_alias);
+
+                            let first_fun_alias = MethodAlias {
+                                function_name: util::safe_ident(&first_fun.name),
+                                struct_name: util::safe_ident(&first_fun.name),
+                            };
+                            aliases.insert(first_fun.abi_signature(), first_fun_alias);
+                            continue
+                        }
                     }
                     1 => {
                         // single additional input params
-                        format!(
-                            "{}_with_{}",
-                            duplicate.name.to_snake_case(),
-                            diff[0].name.to_snake_case()
-                        )
+                        if diff[0].name.is_empty() ||
+                            num_functions > NAME_ALIASING_OVERLOADED_FUNCTIONS_CAP ||
+                            name_conflicts(*idx, &diffs)
+                        {
+                            needs_alias_for_first_fun_using_idx = true;
+                            format!("{}{}", overloaded_fun.name.to_snake_case(), idx)
+                        } else {
+                            format!(
+                                "{}_with_{}",
+                                overloaded_fun.name.to_snake_case(),
+                                diff[0].name.to_snake_case()
+                            )
+                        }
                     }
                     _ => {
-                        // 1 + n additional input params
-                        let and = diff
-                            .iter()
-                            .skip(1)
-                            .map(|i| i.name.to_snake_case())
-                            .collect::<Vec<_>>()
-                            .join("_and_");
-                        format!(
-                            "{}_with_{}_and_{}",
-                            duplicate.name.to_snake_case(),
-                            diff[0].name.to_snake_case(),
-                            and
-                        )
+                        if diff.iter().any(|d| d.name.is_empty()) ||
+                            num_functions > NAME_ALIASING_OVERLOADED_FUNCTIONS_CAP ||
+                            name_conflicts(*idx, &diffs)
+                        {
+                            needs_alias_for_first_fun_using_idx = true;
+                            format!("{}{}", overloaded_fun.name.to_snake_case(), idx)
+                        } else {
+                            // 1 + n additional input params
+                            let and = diff
+                                .iter()
+                                .skip(1)
+                                .map(|i| i.name.to_snake_case())
+                                .collect::<Vec<_>>()
+                                .join("_and_");
+                            format!(
+                                "{}_with_{}_and_{}",
+                                overloaded_fun.name.to_snake_case(),
+                                diff[0].name.to_snake_case(),
+                                and
+                            )
+                        }
                     }
                 };
-                aliases.insert(duplicate.abi_signature(), util::safe_ident(&alias));
+                let alias = MethodAlias::new(&alias);
+                aliases.insert(overloaded_fun.abi_signature(), alias);
+            }
+
+            if needs_alias_for_first_fun_using_idx {
+                // insert an alias for the root duplicated call
+                let prev_alias = format!("{}{}", first_fun.name.to_snake_case(), first_fun_idx);
+
+                let alias = MethodAlias::new(&prev_alias);
+
+                aliases.insert(first_fun.abi_signature(), alias);
+            }
+        }
+
+        // we have to handle the edge cases with underscore prefix and suffix that would get
+        // stripped by Inflector::to_snake_case/pascalCase if there is another function that
+        // would collide we manually add an alias for it eg. abi = ["_a(), a(), a_(),
+        // _a_()"] will generate identical rust functions
+        for (name, functions) in self.abi.functions.iter() {
+            if name.starts_with('_') || name.ends_with('_') {
+                let ident = name.trim_matches('_').trim_end_matches('_');
+                // check for possible collisions after Inflector would remove the underscores
+                if self.abi.functions.contains_key(ident) {
+                    for function in functions {
+                        if let Entry::Vacant(entry) = aliases.entry(function.abi_signature()) {
+                            // use the full name as alias
+                            entry.insert(MethodAlias::new(name.as_str()));
+                        }
+                    }
+                }
             }
         }
         Ok(aliases)
-    }
-}
-
-fn expand_fn_outputs(outputs: &[Param]) -> Result<TokenStream> {
-    match outputs.len() {
-        0 => Ok(quote! { () }),
-        1 => types::expand(&outputs[0].kind),
-        _ => {
-            let types = outputs
-                .iter()
-                .map(|param| types::expand(&param.kind))
-                .collect::<Result<Vec<_>>>()?;
-            Ok(quote! { (#( #types ),*) })
-        }
     }
 }
 
@@ -359,24 +593,47 @@ fn expand_selector(selector: Selector) -> TokenStream {
     quote! { [#( #bytes ),*] }
 }
 
-/// Expands to the name of the call struct
-fn expand_call_struct_name(function: &Function, alias: Option<&Ident>) -> Ident {
-    let name = if let Some(id) = alias {
-        format!("{}Call", id.to_string().to_pascal_case())
+/// Represents the aliases to use when generating method related elements
+#[derive(Debug, Clone)]
+pub struct MethodAlias {
+    pub function_name: Ident,
+    pub struct_name: Ident,
+}
+
+impl MethodAlias {
+    pub fn new(alias: &str) -> Self {
+        MethodAlias {
+            function_name: util::safe_snake_case_ident(alias),
+            struct_name: util::safe_pascal_case_ident(alias),
+        }
+    }
+}
+
+fn expand_function_name(function: &Function, alias: Option<&MethodAlias>) -> Ident {
+    if let Some(alias) = alias {
+        alias.function_name.clone()
     } else {
-        format!("{}Call", function.name.to_pascal_case())
+        util::safe_ident(&util::safe_snake_case(&function.name))
+    }
+}
+
+/// Expands to the name of the call struct
+fn expand_call_struct_name(function: &Function, alias: Option<&MethodAlias>) -> Ident {
+    let name = if let Some(alias) = alias {
+        format!("{}Call", alias.struct_name)
+    } else {
+        format!("{}Call", util::safe_pascal_case(&function.name))
     };
     util::ident(&name)
 }
 
 /// Expands to the name of the call struct
-fn expand_call_struct_variant_name(function: &Function, alias: Option<&Ident>) -> Ident {
-    let name = if let Some(id) = alias {
-        id.to_string().to_pascal_case()
+fn expand_call_struct_variant_name(function: &Function, alias: Option<&MethodAlias>) -> Ident {
+    if let Some(alias) = alias {
+        alias.struct_name.clone()
     } else {
-        function.name.to_pascal_case()
-    };
-    util::ident(&name)
+        util::safe_ident(&util::safe_pascal_case(&function.name))
+    }
 }
 
 /// Expands to the tuple struct definition
@@ -413,6 +670,20 @@ mod tests {
     use ethers_core::abi::ParamType;
 
     use super::*;
+
+    fn expand_fn_outputs(outputs: &[Param]) -> Result<TokenStream> {
+        match outputs.len() {
+            0 => Ok(quote! { () }),
+            1 => types::expand(&outputs[0].kind),
+            _ => {
+                let types = outputs
+                    .iter()
+                    .map(|param| types::expand(&param.kind))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(quote! { (#( #types ),*) })
+            }
+        }
+    }
 
     // packs the argument in a tuple to be used for the contract call
     fn expand_inputs_call_arg(inputs: &[Param]) -> TokenStream {
@@ -476,11 +747,7 @@ mod tests {
 
         // two inputs
         let params = vec![
-            Param {
-                name: "arg_a".to_string(),
-                kind: ParamType::Address,
-                internal_type: None,
-            },
+            Param { name: "arg_a".to_string(), kind: ParamType::Address, internal_type: None },
             Param {
                 name: "arg_b".to_string(),
                 kind: ParamType::Uint(256usize),
@@ -492,21 +759,13 @@ mod tests {
 
         // three inputs
         let params = vec![
-            Param {
-                name: "arg_a".to_string(),
-                kind: ParamType::Address,
-                internal_type: None,
-            },
+            Param { name: "arg_a".to_string(), kind: ParamType::Address, internal_type: None },
             Param {
                 name: "arg_b".to_string(),
                 kind: ParamType::Uint(128usize),
                 internal_type: None,
             },
-            Param {
-                name: "arg_c".to_string(),
-                kind: ParamType::Bool,
-                internal_type: None,
-            },
+            Param { name: "arg_c".to_string(), kind: ParamType::Bool, internal_type: None },
         ];
         let token_stream = expand_inputs_call_arg(&params);
         assert_eq!(token_stream.to_string(), "(arg_a , arg_b , arg_c ,)");
@@ -562,16 +821,8 @@ mod tests {
     fn expand_fn_outputs_multiple() {
         assert_quote!(
             expand_fn_outputs(&[
-                Param {
-                    name: "a".to_string(),
-                    kind: ParamType::Bool,
-                    internal_type: None,
-                },
-                Param {
-                    name: "b".to_string(),
-                    kind: ParamType::Address,
-                    internal_type: None,
-                },
+                Param { name: "a".to_string(), kind: ParamType::Bool, internal_type: None },
+                Param { name: "b".to_string(), kind: ParamType::Address, internal_type: None },
             ],)
             .unwrap(),
             { (bool, ethers_core::types::Address) },

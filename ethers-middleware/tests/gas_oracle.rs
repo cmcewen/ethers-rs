@@ -4,12 +4,13 @@ use std::convert::TryFrom;
 
 use async_trait::async_trait;
 
-use ethers_core::{types::*, utils::Ganache};
+use ethers_core::{types::*, utils::Anvil};
 use ethers_middleware::gas_oracle::{
     EthGasStation, Etherchain, Etherscan, GasCategory, GasOracle, GasOracleError,
     GasOracleMiddleware,
 };
 use ethers_providers::{Http, Middleware, Provider};
+use serial_test::serial;
 
 #[derive(Debug)]
 struct FakeGasOracle {
@@ -30,26 +31,23 @@ impl GasOracle for FakeGasOracle {
 
 #[tokio::test]
 async fn using_gas_oracle() {
-    let ganache = Ganache::new().spawn();
+    let anvil = Anvil::new().spawn();
 
-    let from = ganache.addresses()[0];
+    let from = anvil.addresses()[0];
 
     // connect to the network
-    let provider = Provider::<Http>::try_from(ganache.endpoint()).unwrap();
+    let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
 
+    // initial base fee
+    let base_fee = 1_000_000_000u64;
     // assign a gas oracle to use
-    let gas_oracle = FakeGasOracle {
-        gas_price: 1337.into(),
-    };
+    let gas_oracle = FakeGasOracle { gas_price: (base_fee + 1337).into() };
     let expected_gas_price = gas_oracle.fetch().await.unwrap();
 
     let provider = GasOracleMiddleware::new(provider, gas_oracle);
 
     // broadcast a transaction
-    let tx = TransactionRequest::new()
-        .from(from)
-        .to(Address::zero())
-        .value(10000);
+    let tx = TransactionRequest::new().from(from).to(Address::zero()).value(10000);
     let tx_hash = provider.send_transaction(tx, None).await.unwrap();
 
     let tx = provider.get_transaction(*tx_hash).await.unwrap().unwrap();
@@ -59,33 +57,33 @@ async fn using_gas_oracle() {
 #[tokio::test]
 async fn eth_gas_station() {
     // initialize and fetch gas estimates from EthGasStation
-    let eth_gas_station_oracle = EthGasStation::new(None);
+    let eth_gas_station_oracle = EthGasStation::default();
     let data = eth_gas_station_oracle.fetch().await;
     assert!(data.is_ok());
 }
 
 #[tokio::test]
+#[serial]
 async fn etherscan() {
-    let api_key = std::env::var("ETHERSCAN_API_KEY").unwrap();
-    let api_key = Some(api_key.as_str());
+    let etherscan_client = ethers_etherscan::Client::new_from_env(Chain::Mainnet).unwrap();
 
     // initialize and fetch gas estimates from Etherscan
     // since etherscan does not support `fastest` category, we expect an error
-    let etherscan_oracle = Etherscan::new(api_key).category(GasCategory::Fastest);
+    let etherscan_oracle = Etherscan::new(etherscan_client.clone()).category(GasCategory::Fastest);
     let data = etherscan_oracle.fetch().await;
     assert!(data.is_err());
 
     // but fetching the `standard` gas price should work fine
-    let etherscan_oracle_2 = Etherscan::new(api_key).category(GasCategory::SafeLow);
+    let etherscan_oracle = Etherscan::new(etherscan_client).category(GasCategory::SafeLow);
 
-    let data = etherscan_oracle_2.fetch().await;
+    let data = etherscan_oracle.fetch().await;
     assert!(data.is_ok());
 }
 
 #[tokio::test]
 async fn etherchain() {
     // initialize and fetch gas estimates from Etherchain
-    let etherchain_oracle = Etherchain::new().category(GasCategory::Fast);
+    let etherchain_oracle = Etherchain::default().category(GasCategory::Fast);
     let data = etherchain_oracle.fetch().await;
     assert!(data.is_ok());
 }

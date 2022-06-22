@@ -47,7 +47,7 @@ impl GethInstance {
 
 impl Drop for GethInstance {
     fn drop(&mut self) {
-        let _ = self.pid.kill().expect("could not kill geth");
+        self.pid.kill().expect("could not kill geth");
     }
 }
 
@@ -87,18 +87,21 @@ impl Geth {
     }
 
     /// Sets the port which will be used when the `geth-cli` instance is launched.
+    #[must_use]
     pub fn port<T: Into<u16>>(mut self, port: T) -> Self {
         self.port = Some(port.into());
         self
     }
 
     /// Sets the block-time which will be used when the `geth-cli` instance is launched.
+    #[must_use]
     pub fn block_time<T: Into<u64>>(mut self, block_time: T) -> Self {
         self.block_time = Some(block_time.into());
         self
     }
 
     /// Manually sets the IPC path for the socket manually.
+    #[must_use]
     pub fn ipc_path<T: Into<PathBuf>>(mut self, path: T) -> Self {
         self.ipc_path = Some(path.into());
         self
@@ -110,11 +113,7 @@ impl Geth {
         let mut cmd = Command::new(GETH);
         // geth uses stderr for its logs
         cmd.stderr(std::process::Stdio::piped());
-        let port = if let Some(port) = self.port {
-            port
-        } else {
-            unused_port()
-        };
+        let port = if let Some(port) = self.port { port } else { unused_port() };
 
         // Open the HTTP API
         cmd.arg("--http");
@@ -138,9 +137,7 @@ impl Geth {
 
         let mut child = cmd.spawn().expect("couldnt start geth");
 
-        let stdout = child
-            .stderr
-            .expect("Unable to get stderr for geth child process");
+        let stdout = child.stderr.expect("Unable to get stderr for geth child process");
 
         let start = Instant::now();
         let mut reader = BufReader::new(stdout);
@@ -151,22 +148,16 @@ impl Geth {
             }
 
             let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .expect("Failed to read line from geth process");
+            reader.read_line(&mut line).expect("Failed to read line from geth process");
 
             // geth 1.9.23 uses "server started" while 1.9.18 uses "endpoint opened"
             if line.contains("HTTP endpoint opened") || line.contains("HTTP server started") {
-                break;
+                break
             }
         }
 
         child.stderr = Some(reader.into_inner());
 
-        GethInstance {
-            pid: child,
-            port,
-            ipc: self.ipc_path,
-        }
+        GethInstance { pid: child, port, ipc: self.ipc_path }
     }
 }

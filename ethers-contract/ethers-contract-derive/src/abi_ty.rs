@@ -1,10 +1,10 @@
 //! Helper functions for deriving `EthAbiType`
 
-use ethers_contract_abigen::ethers_core_crate;
-use proc_macro2::{Ident, TokenStream};
+use crate::utils;
+use ethers_core::macros::ethers_core_crate;
+use proc_macro2::{Ident, Literal, TokenStream};
 use quote::{quote, quote_spanned};
-use syn::spanned::Spanned as _;
-use syn::{parse::Error, Data, DeriveInput, Fields, Variant};
+use syn::{parse::Error, spanned::Spanned as _, Data, DeriveInput, Fields, Variant};
 
 /// Generates the tokenize implementation
 pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream {
@@ -39,7 +39,7 @@ pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream
 
                 let assignments = fields.named.iter().map(|f| {
                     let name = f.ident.as_ref().expect("Named fields have names");
-                    quote_spanned! { f.span() => #name: #core_crate::abi::Tokenizable::from_token(iter.next().expect("tokens size is sufficient qed").into_token())? }
+                    quote_spanned! { f.span() => #name: #core_crate::abi::Tokenizable::from_token(iter.next().unwrap())? }
                 });
                 let init_struct_impl = quote! { Self { #(#assignments,)* } };
 
@@ -49,12 +49,7 @@ pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream
                 });
                 let into_token_impl = quote! { #(#into_token,)* };
 
-                (
-                    tokenize_predicates,
-                    fields.named.len(),
-                    init_struct_impl,
-                    into_token_impl,
-                )
+                (tokenize_predicates, fields.named.len(), init_struct_impl, into_token_impl)
             }
             Fields::Unnamed(ref fields) => {
                 let tokenize_predicates = fields.unnamed.iter().map(|f| {
@@ -64,7 +59,7 @@ pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream
                 let tokenize_predicates = quote! { #(#tokenize_predicates,)* };
 
                 let assignments = fields.unnamed.iter().map(|f| {
-                    quote_spanned! { f.span() => #core_crate::abi::Tokenizable::from_token(iter.next().expect("tokens size is sufficient qed").into_token())? }
+                    quote_spanned! { f.span() => #core_crate::abi::Tokenizable::from_token(iter.next().unwrap())? }
                 });
                 let init_struct_impl = quote! { Self(#(#assignments,)* ) };
 
@@ -74,12 +69,7 @@ pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream
                 });
                 let into_token_impl = quote! { #(#into_token,)* };
 
-                (
-                    tokenize_predicates,
-                    fields.unnamed.len(),
-                    init_struct_impl,
-                    into_token_impl,
-                )
+                (tokenize_predicates, fields.unnamed.len(), init_struct_impl, into_token_impl)
             }
             Fields::Unit => return tokenize_unit_type(&input.ident),
         },
@@ -91,7 +81,7 @@ pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream
         }
         Data::Union(_) => {
             return Error::new(input.span(), "EthAbiType cannot be derived for unions")
-                .to_compile_error();
+                .to_compile_error()
         }
     };
 
@@ -142,7 +132,20 @@ pub fn derive_tokenizeable_impl(input: &DeriveInput) -> proc_macro2::TokenStream
         }
     };
 
+    let params = match utils::derive_param_type_with_abi_type(input, "EthAbiType") {
+        Ok(params) => params,
+        Err(err) => return err.to_compile_error(),
+    };
     quote! {
+
+        impl<#generic_params> #core_crate::abi::AbiType for #name<#generic_args>  {
+            fn param_type() -> #core_crate::abi::ParamType {
+                #params
+            }
+        }
+
+       impl<#generic_params> #core_crate::abi::AbiArrayType for #name<#generic_args> {}
+
          impl<#generic_params> #core_crate::abi::Tokenizable for #name<#generic_args>
          where
              #generic_predicates
@@ -198,6 +201,12 @@ fn tokenize_unit_type(name: &Ident) -> TokenStream {
     }
 }
 
+/// Derive for an enum
+///
+/// An enum can be a [solidity enum](https://docs.soliditylang.org/en/v0.5.3/types.html#enums) or a
+/// bundled set of different types.
+///
+/// Decoding works like untagged decoding
 fn tokenize_enum<'a>(
     enum_name: &Ident,
     variants: impl Iterator<Item = &'a Variant> + 'a,
@@ -206,15 +215,24 @@ fn tokenize_enum<'a>(
 
     let mut into_tokens = TokenStream::new();
     let mut from_tokens = TokenStream::new();
-    for variant in variants {
+    for (idx, variant) in variants.into_iter().enumerate() {
+        let var_ident = &variant.ident;
         if variant.fields.len() > 1 {
             return Err(Error::new(
                 variant.span(),
                 "EthAbiType cannot be derived for enum variants with multiple fields",
-            ));
-        }
-        let var_ident = &variant.ident;
-        if let Some(field) = variant.fields.iter().next() {
+            ))
+        } else if variant.fields.is_empty() {
+            let value = Literal::u8_unsuffixed(idx as u8);
+            from_tokens.extend(quote! {
+                 if let Ok(#value) = u8::from_token(token.clone()) {
+                    return Ok(#enum_name::#var_ident)
+                }
+            });
+            into_tokens.extend(quote! {
+                 #enum_name::#var_ident => #value.into_token(),
+            });
+        } else if let Some(field) = variant.fields.iter().next() {
             let ty = &field.ty;
             from_tokens.extend(quote! {
                 if let Ok(decoded) = #ty::from_token(token.clone()) {
@@ -226,8 +244,8 @@ fn tokenize_enum<'a>(
             });
         } else {
             into_tokens.extend(quote! {
-                 #enum_name::#var_ident(element) => # ethers_core::abi::Token::Tuple(::std::vec::Vec::new()),
-            });
+             #enum_name::#var_ident(element) => # ethers_core::abi::Token::Tuple(::std::vec::Vec::new()),
+        });
         }
     }
 

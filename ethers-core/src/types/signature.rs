@@ -9,13 +9,15 @@ use std::{convert::TryFrom, fmt, str::FromStr};
 
 use thiserror::Error;
 
-use elliptic_curve::consts::U32;
+use elliptic_curve::{consts::U32, sec1::ToEncodedPoint};
 use generic_array::GenericArray;
-use k256::ecdsa::{
-    recoverable::{Id as RecoveryId, Signature as RecoverableSignature},
-    Error as K256SignatureError, Signature as K256Signature,
+use k256::{
+    ecdsa::{
+        recoverable::{Id as RecoveryId, Signature as RecoverableSignature},
+        Error as K256SignatureError, Signature as K256Signature,
+    },
+    PublicKey as K256PublicKey,
 };
-use k256::EncodedPoint as K256PublicKey;
 
 /// An error involving a signature.
 #[derive(Debug, Error)]
@@ -43,7 +45,7 @@ pub enum SignatureError {
 /// The message data can either be a binary message that is first hashed
 /// according to EIP-191 and then recovered based on the signature or a
 /// precomputed hash.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryMessage {
     /// Message bytes
     Data(Vec<u8>),
@@ -58,7 +60,7 @@ pub struct Signature {
     pub r: U256,
     /// S Value
     pub s: U256,
-    /// V value in 'Electrum' notation.
+    /// V value
     pub v: u64,
 }
 
@@ -79,7 +81,7 @@ impl Signature {
         let address = address.into();
         let recovered = self.recover(message)?;
         if recovered != address {
-            return Err(SignatureError::VerificationError(address, recovered));
+            return Err(SignatureError::VerificationError(address, recovered))
         }
 
         Ok(())
@@ -103,15 +105,12 @@ impl Signature {
         let verify_key =
             recoverable_sig.recover_verify_key_from_digest_bytes(message_hash.as_ref().into())?;
 
-        let uncompressed_pub_key = K256PublicKey::from(&verify_key).decompress();
-        if let Some(public_key) = uncompressed_pub_key {
-            let public_key = public_key.to_bytes();
-            debug_assert_eq!(public_key[0], 0x04);
-            let hash = crate::utils::keccak256(&public_key[1..]);
-            Ok(Address::from_slice(&hash[12..]))
-        } else {
-            Err(SignatureError::RecoveryError)
-        }
+        let public_key = K256PublicKey::from(&verify_key);
+        let public_key = public_key.to_encoded_point(/* compress = */ false);
+        let public_key = public_key.as_bytes();
+        debug_assert_eq!(public_key[0], 0x04);
+        let hash = crate::utils::keccak256(&public_key[1..]);
+        Ok(Address::from_slice(&hash[12..]))
     }
 
     /// Retrieves the recovery signature.
@@ -132,7 +131,7 @@ impl Signature {
     }
 
     /// Retrieve the recovery ID.
-    fn recovery_id(&self) -> Result<RecoveryId, SignatureError> {
+    pub fn recovery_id(&self) -> Result<RecoveryId, SignatureError> {
         let standard_v = normalize_recovery_id(self.v);
         Ok(RecoveryId::new(standard_v)?)
     }
@@ -163,7 +162,7 @@ impl<'a> TryFrom<&'a [u8]> for Signature {
     /// and the final byte is the `v` value in 'Electrum' notation.
     fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
         if bytes.len() != 65 {
-            return Err(SignatureError::InvalidLength(bytes.len()));
+            return Err(SignatureError::InvalidLength(bytes.len()))
         }
 
         let v = bytes[64];

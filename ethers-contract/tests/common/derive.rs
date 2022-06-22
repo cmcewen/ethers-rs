@@ -1,13 +1,15 @@
-use ethers_contract::EthLogDecode;
-use ethers_contract::{abigen, AbiDecode, EthAbiType, EthCall, EthDisplay, EthEvent};
-use ethers_core::abi::{RawLog, Tokenizable};
-use ethers_core::types::Address;
-use ethers_core::types::{H160, H256, I256, U128, U256};
+use ethers_contract::{
+    abigen, EthAbiCodec, EthAbiType, EthCall, EthDisplay, EthEvent, EthLogDecode,
+};
+use ethers_core::{
+    abi::{AbiDecode, AbiEncode, RawLog, Tokenizable},
+    types::{Address, Bytes, H160, H256, I256, U128, U256},
+};
 
 fn assert_tokenizeable<T: Tokenizable>() {}
 fn assert_ethcall<T: EthCall>() {}
 
-#[derive(Debug, Clone, PartialEq, EthAbiType)]
+#[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
 struct ValueChanged {
     old_author: Address,
     new_author: Address,
@@ -21,7 +23,7 @@ struct ValueChangedWrapper {
     msg: String,
 }
 
-#[derive(Debug, Clone, PartialEq, EthAbiType)]
+#[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
 struct ValueChangedTuple(Address, Address, String, String);
 
 #[derive(Debug, Clone, PartialEq, EthAbiType)]
@@ -47,13 +49,13 @@ fn can_detokenize_struct() {
 
 #[test]
 fn can_derive_abi_type_empty_struct() {
-    #[derive(Debug, Clone, PartialEq, EthAbiType)]
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
     struct Call();
 
-    #[derive(Debug, Clone, PartialEq, EthAbiType)]
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
     struct Call2 {};
 
-    #[derive(Debug, Clone, PartialEq, EthAbiType)]
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
     struct Call3;
 
     assert_tokenizeable::<Call>();
@@ -128,7 +130,7 @@ fn can_detokenize_single_field() {
 
 #[test]
 fn can_derive_eth_event() {
-    #[derive(Debug, Clone, PartialEq, EthEvent)]
+    #[derive(Debug, Clone, PartialEq, Eq, EthEvent)]
     struct ValueChangedEvent {
         old_author: Address,
         new_author: Address,
@@ -155,7 +157,7 @@ fn can_derive_eth_event() {
 
 #[test]
 fn can_set_eth_event_name_attribute() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     #[ethevent(name = "MyEvent")]
     struct ValueChangedEvent {
         old_author: Address,
@@ -165,15 +167,12 @@ fn can_set_eth_event_name_attribute() {
     }
 
     assert_eq!("MyEvent", ValueChangedEvent::name());
-    assert_eq!(
-        "MyEvent(address,address,string,string)",
-        ValueChangedEvent::abi_signature()
-    );
+    assert_eq!("MyEvent(address,address,string,string)", ValueChangedEvent::abi_signature());
 }
 
 #[test]
 fn can_detect_various_event_abi_types() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     struct ValueChangedEvent {
         old_author: Address,
         s: String,
@@ -205,7 +204,7 @@ fn can_detect_various_event_abi_types() {
 
 #[test]
 fn can_set_eth_abi_attribute() {
-    #[derive(Debug, Clone, PartialEq, EthAbiType)]
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
     struct SomeType {
         inner: Address,
         msg: String,
@@ -243,7 +242,7 @@ fn can_set_eth_abi_attribute() {
 
 #[test]
 fn can_derive_indexed_and_anonymous_attribute() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     #[ethevent(anonymous)]
     struct ValueChangedEvent {
         old_author: Address,
@@ -268,10 +267,7 @@ fn can_generate_ethevent_from_json() {
         }
     );
 
-    assert_eq!(
-        "Created(address,address,address,address)",
-        CreatedFilter::abi_signature()
-    );
+    assert_eq!("Created(address,address,address,address)", CreatedFilter::abi_signature());
 
     assert_eq!(
         H256([
@@ -284,7 +280,7 @@ fn can_generate_ethevent_from_json() {
 
 #[test]
 fn can_decode_event_with_no_topics() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     pub struct LiquidateBorrow {
         liquidator: Address,
         borrower: Address,
@@ -294,11 +290,9 @@ fn can_decode_event_with_no_topics() {
     }
     // https://etherscan.io/tx/0xb7ba825294f757f8b8b6303b2aef542bcaebc9cc0217ddfaf822200a00594ed9#eventlog index 141
     let log = RawLog {
-        topics: vec![
-            "298637f684da70674f26509b10f07ec2fbc77a335ab1e7d6215a4b2484d8bb52"
-                .parse()
-                .unwrap(),
-        ],
+        topics: vec!["298637f684da70674f26509b10f07ec2fbc77a335ab1e7d6215a4b2484d8bb52"
+            .parse()
+            .unwrap()],
         data: vec![
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 188, 205, 0, 29, 173, 151, 238, 5, 127, 91, 31,
             197, 154, 221, 40, 175, 143, 32, 26, 201, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 133, 129,
@@ -316,7 +310,7 @@ fn can_decode_event_with_no_topics() {
 
 #[test]
 fn can_decode_event_single_param() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     pub struct OneParam {
         #[ethevent(indexed)]
         param1: U256,
@@ -324,12 +318,8 @@ fn can_decode_event_single_param() {
 
     let log = RawLog {
         topics: vec![
-            "bd9bb67345a2fcc8ef3b0857e7e2901f5a0dcfc7fe5e3c10dc984f02842fb7ba"
-                .parse()
-                .unwrap(),
-            "000000000000000000000000000000000000000000000000000000000000007b"
-                .parse()
-                .unwrap(),
+            "bd9bb67345a2fcc8ef3b0857e7e2901f5a0dcfc7fe5e3c10dc984f02842fb7ba".parse().unwrap(),
+            "000000000000000000000000000000000000000000000000000000000000007b".parse().unwrap(),
         ],
         data: vec![],
     };
@@ -340,17 +330,13 @@ fn can_decode_event_single_param() {
 
 #[test]
 fn can_decode_event_tuple_single_param() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     struct OneParam(#[ethevent(indexed)] U256);
 
     let log = RawLog {
         topics: vec![
-            "bd9bb67345a2fcc8ef3b0857e7e2901f5a0dcfc7fe5e3c10dc984f02842fb7ba"
-                .parse()
-                .unwrap(),
-            "000000000000000000000000000000000000000000000000000000000000007b"
-                .parse()
-                .unwrap(),
+            "bd9bb67345a2fcc8ef3b0857e7e2901f5a0dcfc7fe5e3c10dc984f02842fb7ba".parse().unwrap(),
+            "000000000000000000000000000000000000000000000000000000000000007b".parse().unwrap(),
         ],
         data: vec![],
     };
@@ -361,15 +347,13 @@ fn can_decode_event_tuple_single_param() {
 
 #[test]
 fn can_decode_event_with_no_params() {
-    #[derive(Debug, PartialEq, EthEvent)]
+    #[derive(Debug, PartialEq, Eq, EthEvent)]
     pub struct NoParam {}
 
     let log = RawLog {
-        topics: vec![
-            "59a6f900daaeb7581ff830f3a97097fa6372db29b0b50c6d1818ede9d1daaa0c"
-                .parse()
-                .unwrap(),
-        ],
+        topics: vec!["59a6f900daaeb7581ff830f3a97097fa6372db29b0b50c6d1818ede9d1daaa0c"
+            .parse()
+            .unwrap()],
         data: vec![],
     };
 
@@ -424,9 +408,7 @@ fn eth_display_works_for_human_readable() {
 
     let log = LogFilter("abc".to_string());
     assert_eq!("abc".to_string(), format!("{}", log));
-    let log = Log2Filter {
-        x: "abc".to_string(),
-    };
+    let log = Log2Filter { x: "abc".to_string() };
     assert_eq!("abc".to_string(), format!("{}", log));
 }
 
@@ -441,6 +423,8 @@ fn can_derive_ethcall() {
         i: I256,
         arr_u8: [u8; 32],
         arr_u16: [u16; 32],
+        nested_arr: [[u8; 32]; 2],
+        double_nested: [[[u8; 32]; 2]; 3],
         v: Vec<u8>,
     }
 
@@ -454,10 +438,7 @@ fn can_derive_ethcall() {
         old_value: String,
         new_value: String,
     }
-    assert_eq!(
-        MyCall::abi_signature().as_ref(),
-        "my_call(address,string,string)"
-    );
+    assert_eq!(MyCall::abi_signature().as_ref(), "my_call(address,string,string)");
 
     assert_tokenizeable::<MyCall>();
     assert_ethcall::<MyCall>();
@@ -465,7 +446,7 @@ fn can_derive_ethcall() {
 
 #[test]
 fn can_derive_ethcall_with_nested_structs() {
-    #[derive(Debug, Clone, PartialEq, EthAbiType)]
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
     struct SomeType {
         inner: Address,
         msg: String,
@@ -479,11 +460,148 @@ fn can_derive_ethcall_with_nested_structs() {
         new_value: String,
     }
 
-    assert_eq!(
-        FooCall::abi_signature().as_ref(),
-        "foo(address,(address,string),string)"
-    );
+    assert_eq!(FooCall::abi_signature().as_ref(), "foo(address,(address,string),string)");
 
     assert_tokenizeable::<FooCall>();
     assert_ethcall::<FooCall>();
+}
+
+#[test]
+fn can_derive_for_enum() {
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType)]
+    enum ActionChoices {
+        GoLeft,
+        GoRight,
+        GoStraight,
+        SitStill,
+    }
+    assert_tokenizeable::<ActionChoices>();
+
+    let token = ActionChoices::GoLeft.into_token();
+    assert_eq!(ActionChoices::GoLeft, ActionChoices::from_token(token).unwrap());
+}
+
+#[test]
+fn can_derive_abi_codec() {
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType, EthAbiCodec)]
+    pub struct SomeType {
+        inner: Address,
+        msg: String,
+    }
+
+    let val = SomeType { inner: Default::default(), msg: "hello".to_string() };
+
+    let encoded = val.clone().encode();
+    let other = SomeType::decode(&encoded).unwrap();
+    assert_eq!(val, other);
+}
+
+#[test]
+fn can_derive_abi_codec_single_field() {
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType, EthAbiCodec)]
+    pub struct SomeType {
+        inner: Vec<U256>,
+    }
+
+    let val = SomeType { inner: Default::default() };
+
+    let encoded = val.clone().encode();
+    let decoded = SomeType::decode(&encoded).unwrap();
+    assert_eq!(val, decoded);
+
+    let encoded_tuple = (Vec::<U256>::default(),).encode();
+
+    assert_eq!(encoded_tuple, encoded);
+    let decoded_tuple = SomeType::decode(&encoded_tuple).unwrap();
+    assert_eq!(decoded_tuple, decoded);
+
+    let tuple = (val,);
+    let encoded = tuple.clone().encode();
+    let decoded = <(SomeType,)>::decode(&encoded).unwrap();
+    assert_eq!(tuple, decoded);
+
+    let wrapped =
+        ethers_core::abi::encode(&ethers_core::abi::Tokenize::into_tokens(tuple.clone())).to_vec();
+    assert_eq!(wrapped, encoded);
+    let decoded_wrapped = <(SomeType,)>::decode(&wrapped).unwrap();
+
+    assert_eq!(decoded_wrapped, tuple);
+}
+
+#[test]
+fn can_derive_abi_codec_two_field() {
+    #[derive(Debug, Clone, PartialEq, Eq, EthAbiType, EthAbiCodec)]
+    pub struct SomeType {
+        inner: Vec<U256>,
+        addr: Address,
+    }
+
+    let val = SomeType { inner: Default::default(), addr: Default::default() };
+
+    let encoded = val.clone().encode();
+    let decoded = SomeType::decode(&encoded).unwrap();
+    assert_eq!(val, decoded);
+
+    let encoded_tuple = (Vec::<U256>::default(), Address::default()).encode();
+
+    assert_eq!(encoded_tuple, encoded);
+    let decoded_tuple = SomeType::decode(&encoded_tuple).unwrap();
+    assert_eq!(decoded_tuple, decoded);
+
+    let tuple = (val,);
+    let encoded = tuple.clone().encode();
+    let decoded = <(SomeType,)>::decode(&encoded).unwrap();
+    assert_eq!(tuple, decoded);
+
+    let wrapped =
+        ethers_core::abi::encode(&ethers_core::abi::Tokenize::into_tokens(tuple.clone())).to_vec();
+    assert_eq!(wrapped, encoded);
+    let decoded_wrapped = <(SomeType,)>::decode(&wrapped).unwrap();
+
+    assert_eq!(decoded_wrapped, tuple);
+}
+
+#[test]
+fn can_derive_ethcall_for_bytes() {
+    #[derive(Clone, Debug, Default, Eq, PartialEq, EthCall, EthDisplay)]
+    #[ethcall(name = "batch", abi = "batch(bytes[],bool)")]
+    pub struct BatchCall {
+        pub calls: Vec<Bytes>,
+        pub revert_on_fail: bool,
+    }
+
+    assert_ethcall::<BatchCall>();
+}
+
+#[test]
+fn can_derive_array_tuples() {
+    #[derive(Clone, Debug, Default, Eq, PartialEq, EthEvent, EthDisplay)]
+    #[ethevent(name = "DiamondCut", abi = "DiamondCut((address,uint8,bytes4[])[],address,bytes)")]
+    pub struct DiamondCutFilter {
+        pub diamond_cut: Vec<(Address, u8, Vec<[u8; 4]>)>,
+        pub init: Address,
+        pub calldata: Bytes,
+    }
+}
+
+#[test]
+fn can_handle_abigen_tuples() {
+    #[derive(Clone, Debug, Default, Eq, PartialEq, EthCall, EthDisplay)]
+    #[ethcall(name = "swap", abi = "swap((uint8,uint8)[])")]
+    pub struct SwapCall {
+        pub pairs_to_swap: ::std::vec::Vec<(u8, u8)>,
+    }
+}
+
+#[test]
+fn eth_display_works_on_ethers_bytes() {
+    #[derive(Clone, Debug, Default, Eq, PartialEq, EthCall, EthDisplay)]
+    #[ethcall(name = "logBytes", abi = "logBytes(bytes)")]
+    pub struct LogBytesCall {
+        pub p_0: ethers_core::types::Bytes,
+    }
+    let call = LogBytesCall { p_0: hex::decode(b"aaaaaa").unwrap().into() };
+
+    let s = format!("{}", call);
+    assert_eq!(s, "0xaaaaaa");
 }

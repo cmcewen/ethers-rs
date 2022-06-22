@@ -1,9 +1,9 @@
 [package]
 name = "ethers"
-version = "0.5.3"
+version = "0.13.0"
 authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
 license = "MIT OR Apache-2.0"
-edition = "2018"
+edition = "2021"
 readme = "README.md"
 documentation = "https://docs.rs/ethers"
 repository = "https://github.com/gakonst/ethers-rs"
@@ -14,26 +14,27 @@ Complete Ethereum library and wallet implementation in Rust.
 
 [workspace]
 members = [
+    "ethers-addressbook",
     "ethers-contract",
     "ethers-providers",
     "ethers-signers",
     "ethers-core",
     "ethers-middleware",
     "ethers-etherscan",
-    "ethers-ffi"
+    "ethers-ffi",
+    "ethers-solc",
+    "examples/ethers-wasm",
 ]
 
 default-members = [
+    "ethers-addressbook",
     "ethers-contract",
     "ethers-providers",
     "ethers-signers",
     "ethers-core",
     "ethers-middleware",
-    "ethers-etherscan"
-]
-
-exclude = [
-    "examples/ethers-wasm",
+    "ethers-etherscan",
+    "ethers-solc",
 ]
 
 [package.metadata.docs.rs]
@@ -60,38 +61,98 @@ legacy = [
 
 # individual features per sub-crate
 ## core
-setup = ["ethers-core/setup"]
 eip712 = ["ethers-contract/eip712", "ethers-core/eip712"]
 ## providers
 ws = ["ethers-providers/ws"]
 ipc = ["ethers-providers/ipc"]
-rustls = ["ethers-providers/rustls"]
-openssl = ["ethers-providers/openssl"]
+rustls = ["ethers-providers/rustls", "ethers-etherscan/rustls", "ethers-contract/rustls", "ethers-solc/rustls"]
+openssl = ["ethers-providers/openssl", "ethers-etherscan/openssl", "ethers-contract/openssl", "ethers-solc/openssl"]
+dev-rpc = ["ethers-providers/dev-rpc"]
 ## signers
 ledger = ["ethers-signers/ledger"]
+trezor = ["ethers-signers/trezor"]
 yubi = ["ethers-signers/yubi"]
 ## contracts
 abigen = ["ethers-contract/abigen"]
-
+### abigen without reqwest
+abigen-offline = ["ethers-contract/abigen-offline"]
+## solc
+solc-async = ["ethers-solc/async"]
+solc-full = ["ethers-solc/full"]
+solc-tests = ["ethers-solc/tests"]
+solc-sha2-asm = ["ethers-solc/asm"]
 
 [dependencies]
-ethers-contract = { version = "^0.5.0", default-features = false, path = "./ethers-contract" }
-ethers-core = { version = "^0.5.0", default-features = false, path = "./ethers-core", features = ["setup"] }
-ethers-providers = { version = "^0.5.0", default-features = false, path = "./ethers-providers" }
-ethers-signers = { version = "^0.5.0", default-features = false, path = "./ethers-signers" }
-ethers-middleware = { version = "^0.5.0", default-features = false, path = "./ethers-middleware" }
+ethers-addressbook = { version = "^0.13.0", default-features = false, path = "./ethers-addressbook" }
+ethers-contract = { version = "^0.13.0", default-features = false, path = "./ethers-contract" }
+ethers-core = { version = "^0.13.0", default-features = false, path = "./ethers-core" }
+ethers-providers = { version = "^0.13.0", default-features = false, path = "./ethers-providers" }
+ethers-signers = { version = "^0.13.0", default-features = false, path = "./ethers-signers" }
+ethers-middleware = { version = "^0.13.0", default-features = false, path = "./ethers-middleware" }
+ethers-solc = { version = "^0.13.0", default-features = false, path = "./ethers-solc" }
+ethers-etherscan = { version = "^0.13.0", default-features = false, path = "./ethers-etherscan" }
 
 [dev-dependencies]
-ethers-contract = { version = "^0.5.0", default-features = false, path = "./ethers-contract", features = ["abigen", "eip712"] }
-ethers-providers = { version = "^0.5.0", default-features = false, path = "./ethers-providers", features = ["ws", "ipc"] }
+ethers-contract = { version = "^0.13.0", default-features = false, path = "./ethers-contract", features = ["abigen", "eip712"] }
+ethers-providers = { version = "^0.13.0", default-features = false, path = "./ethers-providers", features = ["ws"] }
 
-anyhow = "1.0.39"
-rand = "0.8.4"
+[target.'cfg(target_family = "unix")'.dev-dependencies]
+ethers-providers = { version = "^0.13.0", default-features = false, path = "./ethers-providers", features = ["ws", "ipc"] }
+eyre = "0.6"
+rand = "0.8.5"
 serde = { version = "1.0.124", features = ["derive"] }
 serde_json = "1.0.64"
-tokio = { version = "1.5", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.18", features = ["macros", "rt-multi-thread"] }
 hex = "0.4.3"
 bytes = "1.1.0"
 
 [patch.crates-io]
 coins-bip32 = { git = 'ssh://git@github.com/Uniswap/bitcoin-rs' }
+
+# profile for the wasm example
+[profile.release.package.ethers-wasm]
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"
+
+
+[[example]]
+name = "contract_human_readable"
+path = "examples/contract_human_readable.rs"
+
+[[example]]
+name = "contract_with_abi"
+path = "examples/contract_with_abi.rs"
+
+[[example]]
+name = "contract_with_abi_and_bytecode"
+path = "examples/contract_with_abi_and_bytecode.rs"
+
+[[example]]
+name = "ipc"
+path = "examples/ipc.rs"
+required-features = ["ipc"]
+
+[[example]]
+name = "ledger"
+path = "examples/ledger.rs"
+required-features = ["ledger"]
+
+[[example]]
+name = "moonbeam_with_abi"
+path = "examples/moonbeam_with_abi.rs"
+required-features = ["legacy"]
+
+[[example]]
+name = "trezor"
+path = "examples/trezor.rs"
+required-features = ["trezor"]
+
+[[example]]
+name = "yubi"
+path = "examples/yubi.rs"
+required-features = ["yubi"]
+
+[[example]]
+name = "paginated_logs"
+path = "examples/paginated_logs.rs"
+required-features = ["rustls"]

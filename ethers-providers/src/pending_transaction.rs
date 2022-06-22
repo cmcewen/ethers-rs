@@ -1,7 +1,6 @@
-use crate::Middleware;
 use crate::{
     stream::{interval, DEFAULT_POLL_INTERVAL},
-    JsonRpcClient, PinBoxFut, Provider, ProviderError,
+    JsonRpcClient, Middleware, PinBoxFut, Provider, ProviderError,
 };
 use ethers_core::types::{Transaction, TransactionReceipt, TxHash, U64};
 use futures_core::stream::Stream;
@@ -26,6 +25,36 @@ use wasm_timer::Delay;
 /// once the transaction has enough `confirmations`. The default number of confirmations
 /// is 1, but may be adjusted with the `confirmations` method. If the transaction does not
 /// have enough confirmations or is not mined, the future will stay in the pending state.
+///
+/// # Example
+///
+///```
+/// # use ethers_providers::{Provider, Http};
+/// # use ethers_core::utils::Anvil;
+/// # use std::convert::TryFrom;
+/// use ethers_providers::Middleware;
+/// use ethers_core::types::TransactionRequest;
+///
+/// # #[tokio::main(flavor = "current_thread")]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let anvil = Anvil::new().spawn();
+/// # let client = Provider::<Http>::try_from(anvil.endpoint()).unwrap();
+/// # let accounts = client.get_accounts().await?;
+/// # let from = accounts[0];
+/// # let to = accounts[1];
+/// # let balance_before = client.get_balance(to, None).await?;
+/// let tx = TransactionRequest::new().to(to).value(1000).from(from);
+/// let receipt = client
+///     .send_transaction(tx, None)
+///     .await?                           // PendingTransaction<_>
+///     .log_msg("Pending transfer hash") // print pending tx hash with message
+///     .await?;                          // Result<Option<TransactionReceipt>, _>
+/// # let _ = receipt;
+/// # let balance_after = client.get_balance(to, None).await?;
+/// # assert_eq!(balance_after, balance_before + 1000);
+/// # Ok(())
+/// # }
+/// ```
 #[pin_project]
 pub struct PendingTransaction<'a, P> {
     tx_hash: TxHash,
@@ -33,7 +62,10 @@ pub struct PendingTransaction<'a, P> {
     provider: &'a Provider<P>,
     state: PendingTxState<'a>,
     interval: Box<dyn Stream<Item = ()> + Send + Unpin>,
+    retries_remaining: usize,
 }
+
+const DEFAULT_RETRIES: usize = 3;
 
 impl<'a, P: JsonRpcClient> PendingTransaction<'a, P> {
     /// Creates a new pending transaction poller from a hash and a provider
@@ -45,6 +77,7 @@ impl<'a, P: JsonRpcClient> PendingTransaction<'a, P> {
             provider,
             state: PendingTxState::InitialDelay(delay),
             interval: Box::new(interval(DEFAULT_POLL_INTERVAL)),
+            retries_remaining: DEFAULT_RETRIES,
         }
     }
 
@@ -56,14 +89,21 @@ impl<'a, P: JsonRpcClient> PendingTransaction<'a, P> {
         self.provider.clone()
     }
 
+    /// Returns the transaction hash of the pending transaction
+    pub fn tx_hash(&self) -> TxHash {
+        self.tx_hash
+    }
+
     /// Sets the number of confirmations for the pending transaction to resolve
     /// to a receipt
+    #[must_use]
     pub fn confirmations(mut self, confs: usize) -> Self {
         self.confirmations = confs;
         self
     }
 
     /// Sets the polling interval
+    #[must_use]
     pub fn interval<T: Into<Duration>>(mut self, duration: T) -> Self {
         let duration = duration.into();
 
@@ -75,13 +115,44 @@ impl<'a, P: JsonRpcClient> PendingTransaction<'a, P> {
 
         self
     }
+
+    /// Set retries
+    #[must_use]
+    pub fn retries(mut self, retries: usize) -> Self {
+        self.retries_remaining = retries;
+        self
+    }
+}
+
+impl<'a, P> PendingTransaction<'a, P> {
+    /// Allows inspecting the content of a pending transaction in a builder-like way to avoid
+    /// more verbose calls, e.g.:
+    /// `let mined = token.transfer(recipient, amt).send().await?.inspect(|tx| println!(".{}",
+    /// *tx)).await?;`
+    pub fn inspect<F>(self, mut f: F) -> Self
+    where
+        F: FnMut(&Self),
+    {
+        f(&self);
+        self
+    }
+
+    /// Logs the pending transaction hash along with a custom message before it.
+    pub fn log_msg<S: std::fmt::Display>(self, msg: S) -> Self {
+        self.inspect(|s| println!("{}: {:?}", msg, **s))
+    }
+
+    /// Logs the pending transaction's hash
+    pub fn log(self) -> Self {
+        self.inspect(|s| println!("Pending hash: {:?}", **s))
+    }
 }
 
 macro_rules! rewake_with_new_state {
     ($ctx:ident, $this:ident, $new_state:expr) => {
         *$this.state = $new_state;
         $ctx.waker().wake_by_ref();
-        return Poll::Pending;
+        return Poll::Pending
     };
 }
 
@@ -96,12 +167,13 @@ macro_rules! rewake_with_new_state_if {
 impl<'a, P: JsonRpcClient> Future for PendingTransaction<'a, P> {
     type Output = Result<Option<TransactionReceipt>, ProviderError>;
 
+    #[cfg_attr(target_arch = "wasm32", allow(unused_must_use))]
     fn poll(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Self::Output> {
         let this = self.project();
 
         match this.state {
             PendingTxState::InitialDelay(fut) => {
-                let _ready = futures_util::ready!(fut.as_mut().poll(ctx));
+                futures_util::ready!(fut.as_mut().poll(ctx));
                 tracing::debug!("Starting to poll pending tx {:?}", *this.tx_hash);
                 let fut = Box::pin(this.provider.get_transaction(*this.tx_hash));
                 rewake_with_new_state!(ctx, this, PendingTxState::GettingTx(fut));
@@ -128,9 +200,14 @@ impl<'a, P: JsonRpcClient> Future for PendingTransaction<'a, P> {
                 let tx_opt = tx_res.unwrap();
                 // If the tx is no longer in the mempool, return Ok(None)
                 if tx_opt.is_none() {
-                    tracing::debug!("Dropped from mempool, pending tx {:?}", *this.tx_hash);
-                    *this.state = PendingTxState::Completed;
-                    return Poll::Ready(Ok(None));
+                    if *this.retries_remaining == 0 {
+                        tracing::debug!("Dropped from mempool, pending tx {:?}", *this.tx_hash);
+                        *this.state = PendingTxState::Completed;
+                        return Poll::Ready(Ok(None))
+                    }
+
+                    *this.retries_remaining -= 1;
+                    rewake_with_new_state!(ctx, this, PendingTxState::PausedGettingTx);
                 }
 
                 // If it hasn't confirmed yet, poll again later
@@ -175,10 +252,7 @@ impl<'a, P: JsonRpcClient> Future for PendingTransaction<'a, P> {
                 // If we requested more than 1 confirmation, we need to compare the receipt's
                 // block number and the current block
                 if *this.confirmations > 1 {
-                    tracing::debug!(
-                        "Waiting on confirmations for pending tx {:?}",
-                        *this.tx_hash
-                    );
+                    tracing::debug!("Waiting on confirmations for pending tx {:?}", *this.tx_hash);
 
                     let fut = Box::pin(this.provider.get_block_number());
                     *this.state = PendingTxState::GettingBlockNumber(fut, receipt.take());
@@ -188,7 +262,7 @@ impl<'a, P: JsonRpcClient> Future for PendingTransaction<'a, P> {
                 } else {
                     let receipt = receipt.take();
                     *this.state = PendingTxState::Completed;
-                    return Poll::Ready(Ok(receipt));
+                    return Poll::Ready(Ok(receipt))
                 }
             }
             PendingTxState::PausedGettingBlockNumber(receipt) => {
@@ -219,7 +293,7 @@ impl<'a, P: JsonRpcClient> Future for PendingTransaction<'a, P> {
                 if current_block > inclusion_block + *this.confirmations - 1 {
                     let receipt = Some(receipt);
                     *this.state = PendingTxState::Completed;
-                    return Poll::Ready(Ok(receipt));
+                    return Poll::Ready(Ok(receipt))
                 } else {
                     tracing::trace!(tx_hash = ?this.tx_hash, "confirmations {}/{}", current_block - inclusion_block + 1, this.confirmations);
                     *this.state = PendingTxState::PausedGettingBlockNumber(Some(receipt));
@@ -313,8 +387,6 @@ impl<'a> fmt::Debug for PendingTxState<'a> {
             PendingTxState::Completed => "Completed",
         };
 
-        f.debug_struct("PendingTxState")
-            .field("state", &state)
-            .finish()
+        f.debug_struct("PendingTxState").field("state", &state).finish()
     }
 }

@@ -1,7 +1,9 @@
 //! Mod of types for ethereum logs
-use ethers_core::abi::Error;
-use ethers_core::abi::RawLog;
-use ethers_core::types::{Address, Log, TxHash, H256, U256, U64};
+use ethers_core::{
+    abi::{Error, RawLog},
+    types::{Address, Log, TxHash, H256, U256, U64},
+};
+use serde::{Deserialize, Serialize};
 
 /// A trait for types (events) that can be decoded from a `RawLog`
 pub trait EthLogDecode: Send + Sync {
@@ -17,7 +19,7 @@ pub fn decode_logs<T: EthLogDecode>(logs: &[RawLog]) -> Result<Vec<T>, Error> {
 }
 
 /// Metadata inside a log
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogMeta {
     /// Address from which this log originated
     pub address: Address,

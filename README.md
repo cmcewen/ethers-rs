@@ -30,11 +30,13 @@ ethers = { git = "https://github.com/gakonst/ethers-rs" }
 ## Running the tests
 
 Tests require the following installed:
-1. [`solc`](https://solidity.readthedocs.io/en/latest/installing-solidity.html). We also recommend using [solc-select](https://github.com/crytic/solc-select) for more flexibility.
-2. [`ganache-cli`](https://github.com/trufflesuite/ganache-cli#installation)
 
-In addition, it is recommended that you set the `ETHERSCAN_API_KEY` environment variable 
-for [the abigen via Etherscan](https://github.com/gakonst/ethers-rs/blob/master/ethers/tests/major_contracts.rs) tests. 
+1. [`solc`](https://solidity.readthedocs.io/en/latest/installing-solidity.html) (>=0.8.10). We also recommend using [solc-select](https://github.com/crytic/solc-select) for more flexibility.
+2. [`anvil`](https://github.com/foundry-rs/foundry/blob/master/anvil/README.md)
+3. [`geth`](https://github.com/ethereum/go-ethereum)
+
+In addition, it is recommended that you set the `ETHERSCAN_API_KEY` environment variable
+for [the abigen via Etherscan](https://github.com/gakonst/ethers-rs/blob/master/ethers-contract/tests/abigen.rs) tests.
 You can get one [here](https://etherscan.io/apis).
 
 ### EVM-compatible chains support
@@ -50,6 +52,16 @@ address that, you must use the `legacy` feature flag:
 ethers = { git = "https://github.com/gakonst/ethers-rs", features = ["legacy"] }
 ```
 
+### Polygon support
+
+There is abigen support for Polygon and the Mumbai test network. It is recommended that you set the `POLYGONSCAN_API_KEY` environment variable.
+You can get one [here](https://polygonscan.io/apis).
+
+### Avalanche support
+
+There is abigen support for Avalanche and the Fuji test network. It is recommended that you set the `SNOWTRACE_API_KEY` environment variable.
+You can get one [here](https://snowtrace.io/apis).
+
 ### Celo Support
 
 [Celo](http://celo.org/) support is turned on via the feature-flag `celo`:
@@ -61,6 +73,7 @@ ethers = { git = "https://github.com/gakonst/ethers-rs", features = ["celo"] }
 ```
 
 Celo's transactions differ from Ethereum transactions by including 3 new fields:
+
 - `fee_currency`: The currency fees are paid in (None for CELO, otherwise it's an Address)
 - `gateway_fee_recipient`: The address of the fee recipient (None for no gateway fee paid)
 - `gateway_fee`: Gateway fee amount (None for no gateway fee paid)
@@ -77,13 +90,30 @@ in the transactions which are fetched over JSON-RPC.
 - [x] Event monitoring as `Stream`s
 - [x] ENS as a first class citizen
 - [x] Celo support
+- [x] Polygon support 
+- [x] Avalanche support 
 - [x] Websockets / `eth_subscribe`
 - [x] Hardware Wallet Support
 - [x] Parity APIs (`tracing`, `parity_blockWithReceipts`)
 - [x] Geth TxPool API
-- [ ] WASM Bindings
-- [ ] FFI Bindings
+- [ ] WASM Bindings (see note)
+- [ ] FFI Bindings (see note)
 - [ ] CLI for common operations
+
+## Note on WASM and FFI bindings
+
+You should be able to build a wasm app that uses ethers-rs (see the [example](./examples/ethers-wasm) for reference). If ethers fails to
+compile in WASM, please
+[open an issue](https://github.com/gakonst/ethers-rs/issues/new/choose).
+There is currently no plan to provide an official JS/TS-accessible library
+interface. we believe [ethers.js](https://docs.ethers.io/v5/) serves that need
+very well.
+
+Similarly, you should be able to build FFI bindings to ethers-rs. If ethers
+fails to compile in c lib formats, please
+[open an issue](https://github.com/gakonst/ethers-rs/issues/new/choose).
+There is currently no plan to provide official FFI bindings, and as ethers-rs is
+not yet stable 1.0.0, its interface may change significantly between versions.
 
 ## Getting Help
 
@@ -98,11 +128,14 @@ Thanks for your help improving the project! We are so happy to have you! We have
 [a contributing guide](https://github.com/gakonst/ethers-rs/blob/master/CONTRIBUTING.md) to
 help you get involved in the ethers-rs project.
 
-If you make a Pull Request, do not forget to add your changes in the [CHANGELOG](CHANGELOG.md).
+If you make a Pull Request, do not forget to add your changes in the [CHANGELOG](CHANGELOG.md) and ensure your code if
+properly formatted with `cargo +nightly fmt` and clippy is happy `cargo clippy`, you can even try to let clippy fix simple
+issues itself: `cargo +nightly clippy --fix -Z unstable-options`
 
 ## Related Projects
 
 This library would not have been possibly without the great work done in:
+
 - [`ethers.js`](https://github.com/ethers-io/ethers.js/)
 - [`rust-web3`](https://github.com/tomusdrw/rust-web3/)
 - [`ethcontract-rs`](https://github.com/gnosis/ethcontract-rs/)

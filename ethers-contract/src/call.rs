@@ -1,23 +1,25 @@
+#![allow(clippy::return_self_not_must_use)]
+
 use super::base::{decode_function_data, AbiError};
 use ethers_core::{
-    abi::{Detokenize, Function, InvalidOutputType},
+    abi::{AbiDecode, AbiEncode, Detokenize, Function, InvalidOutputType, Tokenizable},
     types::{
-        transaction::eip2718::TypedTransaction, Address, BlockId, Bytes, TransactionRequest, U256,
+        transaction::eip2718::TypedTransaction, Address, BlockId, Bytes, Selector,
+        TransactionRequest, U256,
     },
+    utils::id,
 };
-use ethers_providers::{Middleware, PendingTransaction, ProviderError};
+use ethers_providers::{
+    call_raw::{CallBuilder, RawCall},
+    Middleware, PendingTransaction, ProviderError,
+};
 
-use std::borrow::Cow;
-use std::{fmt::Debug, marker::PhantomData, sync::Arc};
+use std::{borrow::Cow, fmt::Debug, future::Future, marker::PhantomData, sync::Arc};
 
-use crate::{AbiDecode, AbiEncode};
-use ethers_core::abi::{Tokenizable, Tokenize};
-use ethers_core::types::Selector;
-use ethers_core::utils::id;
 use thiserror::Error as ThisError;
 
 /// A helper trait for types that represent all call input parameters of a specific function
-pub trait EthCall: Tokenizable + AbiDecode + Send + Sync {
+pub trait EthCall: Tokenizable + AbiDecode + AbiEncode + Send + Sync {
     /// The name of the function
     fn function_name() -> Cow<'static, str>;
 
@@ -27,20 +29,6 @@ pub trait EthCall: Tokenizable + AbiDecode + Send + Sync {
     /// The selector of the function
     fn selector() -> Selector {
         id(Self::abi_signature())
-    }
-}
-
-impl<T: EthCall> AbiEncode for T {
-    fn encode(self) -> Result<Bytes, AbiError> {
-        let tokens = self.into_tokens();
-        let selector = Self::selector();
-        let encoded = ethers_core::abi::encode(&tokens);
-        let encoded: Vec<_> = selector
-            .iter()
-            .copied()
-            .chain(encoded.into_iter())
-            .collect();
-        Ok(encoded.into())
     }
 }
 
@@ -78,7 +66,7 @@ pub enum ContractError<M: Middleware> {
     ContractNotDeployed,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[must_use = "contract calls do nothing unless you `send` or `call` them"]
 /// Helper for managing a transaction before submitting it to a node
 pub struct ContractCall<M, D> {
@@ -90,6 +78,18 @@ pub struct ContractCall<M, D> {
     pub block: Option<BlockId>,
     pub(crate) client: Arc<M>,
     pub(crate) datatype: PhantomData<D>,
+}
+
+impl<M, D> Clone for ContractCall<M, D> {
+    fn clone(&self) -> Self {
+        ContractCall {
+            tx: self.tx.clone(),
+            function: self.function.clone(),
+            block: self.block,
+            client: self.client.clone(),
+            datatype: self.datatype,
+        }
+    }
 }
 
 impl<M, D: Detokenize> ContractCall<M, D> {
@@ -150,10 +150,7 @@ where
 
     /// Returns the estimated gas cost for the underlying transaction to be executed
     pub async fn estimate_gas(&self) -> Result<U256, ContractError<M>> {
-        self.client
-            .estimate_gas(&self.tx)
-            .await
-            .map_err(ContractError::MiddlewareError)
+        self.client.estimate_gas(&self.tx).await.map_err(ContractError::MiddlewareError)
     }
 
     /// Queries the blockchain via an `eth_call` for the provided transaction.
@@ -166,16 +163,44 @@ where
     ///
     /// Note: this function _does not_ send a transaction from your account
     pub async fn call(&self) -> Result<D, ContractError<M>> {
-        let bytes = self
-            .client
-            .call(&self.tx.clone(), self.block)
-            .await
-            .map_err(ContractError::MiddlewareError)?;
+        let bytes =
+            self.client.call(&self.tx, self.block).await.map_err(ContractError::MiddlewareError)?;
 
         // decode output
         let data = decode_function_data(&self.function, &bytes, false)?;
 
         Ok(data)
+    }
+
+    /// Returns an implementer of [`RawCall`] which can be `.await`d to query the blockchain via
+    /// `eth_call`, returning the deoded return data.
+    ///
+    /// The returned call can also be used to override the input parameters to `eth_call`.
+    ///
+    /// Note: this function _does not_ send a transaction from your account
+    pub fn call_raw(
+        &self,
+    ) -> impl RawCall<'_> + Future<Output = Result<D, ContractError<M>>> + Debug {
+        let call = self.call_raw_bytes();
+        call.map(move |res: Result<Bytes, ProviderError>| {
+            let bytes = res.map_err(ContractError::ProviderError)?;
+            decode_function_data(&self.function, &bytes, false).map_err(From::from)
+        })
+    }
+
+    /// Returns a [`CallBuilder`] which can be `.await`d to query the blochcain via `eth_call`,
+    /// returning the raw bytes from the transaction.
+    ///
+    /// The returned call can also be used to override the input parameters to `eth_call`.
+    ///
+    /// Note: this function _does not_ send a transaction from your account
+    pub fn call_raw_bytes(&self) -> CallBuilder<'_, M::Provider> {
+        let call = self.client.provider().call_raw(&self.tx);
+        if let Some(block) = self.block {
+            call.block(block)
+        } else {
+            call
+        }
     }
 
     /// Signs and broadcasts the provided transaction

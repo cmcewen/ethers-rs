@@ -1,9 +1,11 @@
 //! This module implements extensions to the [`ethabi`](https://docs.rs/ethabi) API.
 // Adapted from [Gnosis' ethcontract](https://github.com/gnosis/ethcontract-rs/blob/master/common/src/abiext.rs)
-use crate::{types::Selector, utils::id};
+use crate::{
+    types::{Bytes, Selector},
+    utils::id,
+};
 
-pub use ethabi::Contract as Abi;
-pub use ethabi::*;
+pub use ethabi::{self, Contract as Abi, *};
 
 mod tokens;
 pub use tokens::{Detokenize, InvalidOutputType, Tokenizable, TokenizableItem, Tokenize};
@@ -11,13 +13,18 @@ pub use tokens::{Detokenize, InvalidOutputType, Tokenizable, TokenizableItem, To
 pub mod struct_def;
 pub use struct_def::SolStruct;
 
+mod codec;
+pub use codec::{AbiDecode, AbiEncode};
+
 mod error;
-pub use error::ParseError;
+pub use error::{AbiError, ParseError};
 
 mod human_readable;
-pub use human_readable::{parse as parse_abi, parse_str as parse_abi_str, AbiParser};
+pub use human_readable::{
+    lexer::HumanReadableParser, parse as parse_abi, parse_str as parse_abi_str, AbiParser,
+};
 
-use crate::types::{H256, H512, U128, U64};
+use crate::types::{H256, H512, I256, U128, U256, U64};
 
 /// Extension trait for `ethabi::Function`.
 pub trait FunctionExt {
@@ -57,11 +64,7 @@ impl EventExt for Event {
         format!(
             "{}({}){}",
             self.name,
-            self.inputs
-                .iter()
-                .map(|input| input.kind.to_string())
-                .collect::<Vec<_>>()
-                .join(","),
+            self.inputs.iter().map(|input| input.kind.to_string()).collect::<Vec<_>>().join(","),
             if self.anonymous { " anonymous" } else { "" },
         )
     }
@@ -97,6 +100,8 @@ impl<T: AbiArrayType, const N: usize> AbiType for [T; N] {
     }
 }
 
+impl<T: AbiArrayType, const N: usize> AbiArrayType for [T; N] {}
+
 impl<const N: usize> AbiType for [u8; N] {
     fn param_type() -> ParamType {
         ParamType::FixedBytes(N)
@@ -119,7 +124,8 @@ macro_rules! impl_abi_type {
 }
 
 impl_abi_type!(
-    Vec<u8> => Bytes,
+    Bytes => Bytes,
+    Vec<u8> =>  Array(Box::new(ParamType::Uint(8))),
     Address => Address,
     bool => Bool,
     String => String,
@@ -127,6 +133,7 @@ impl_abi_type!(
     H512 => FixedBytes(64),
     U64 => Uint(64),
     U128 => Uint(128),
+    U256 => Uint(256),
     u16 => Uint(16),
     u32 => Uint(32),
     u64 => Uint(64),
@@ -135,7 +142,8 @@ impl_abi_type!(
     i16 => Int(16),
     i32 => Int(32),
     i64 => Int(64),
-    i128 => Int(128)
+    i128 => Int(128),
+    I256 => Int(256)
 );
 
 macro_rules! impl_abi_type_tuple {
@@ -158,7 +166,7 @@ macro_rules! impl_abi_type_tuple {
 
         impl<$($ty, )+> AbiArrayType for ($($ty,)+) where
             $(
-                $ty: AbiArrayType,
+                $ty: AbiType,
             )+ {}
     }
 }
@@ -222,10 +230,7 @@ mod tests {
                 r#"{"name":"baz","inputs":[{"name":"a","type":"uint256"}],"anonymous":true}"#,
                 "baz(uint256) anonymous",
             ),
-            (
-                r#"{"name":"bax","inputs":[],"anonymous":true}"#,
-                "bax() anonymous",
-            ),
+            (r#"{"name":"bax","inputs":[],"anonymous":true}"#, "bax() anonymous"),
         ] {
             let event: Event = serde_json::from_str(e).expect("invalid event JSON");
             let signature = event.abi_signature();
@@ -235,24 +240,25 @@ mod tests {
 
     #[test]
     fn abi_type_works() {
-        assert_eq!(ParamType::Bytes, Vec::<u8>::param_type());
+        assert_eq!(ParamType::Bytes, Bytes::param_type());
+        assert_eq!(ParamType::Array(Box::new(ParamType::Uint(8))), Vec::<u8>::param_type());
+        assert_eq!(ParamType::Array(Box::new(ParamType::Bytes)), Vec::<Bytes>::param_type());
         assert_eq!(
-            ParamType::Array(Box::new(ParamType::Bytes)),
+            ParamType::Array(Box::new(ParamType::Array(Box::new(ParamType::Uint(8))))),
             Vec::<Vec<u8>>::param_type()
         );
         assert_eq!(
-            ParamType::Array(Box::new(ParamType::Array(Box::new(ParamType::Bytes)))),
+            ParamType::Array(Box::new(ParamType::Array(Box::new(ParamType::Array(Box::new(
+                ParamType::Uint(8)
+            )))))),
             Vec::<Vec<Vec<u8>>>::param_type()
         );
 
-        assert_eq!(
-            ParamType::Array(Box::new(ParamType::Uint(16))),
-            Vec::<u16>::param_type()
-        );
+        assert_eq!(ParamType::Array(Box::new(ParamType::Uint(16))), Vec::<u16>::param_type());
 
         assert_eq!(
             ParamType::Tuple(vec![ParamType::Bytes, ParamType::Address]),
-            <(Vec<u8>, Address)>::param_type()
+            <(Bytes, Address)>::param_type()
         );
 
         assert_eq!(ParamType::FixedBytes(32), <[u8; 32]>::param_type());
@@ -265,5 +271,23 @@ mod tests {
             ParamType::FixedArray(Box::new(ParamType::Uint(16)), 32),
             <[u16; 32]>::param_type()
         );
+    }
+
+    #[test]
+    fn abi_type_tuples_work() {
+        fn assert_abitype<T: AbiType>() {}
+        fn assert_abiarraytype<T: AbiArrayType>() {}
+
+        assert_abitype::<(u64, u64)>();
+        assert_abiarraytype::<(u64, u64)>();
+
+        assert_abitype::<(u8, u8)>();
+        assert_abiarraytype::<(u8, u8)>();
+
+        assert_abitype::<Vec<(u64, u64)>>();
+        assert_abiarraytype::<Vec<(u64, u64)>>();
+
+        assert_abitype::<Vec<(u8, u8)>>();
+        assert_abiarraytype::<Vec<(u8, u8)>>();
     }
 }

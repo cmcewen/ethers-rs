@@ -1,7 +1,7 @@
 [package]
 name = "ethers-providers"
 license = "MIT OR Apache-2.0"
-version = "0.5.4"
+version = "0.13.0"
 authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
 edition = "2018"
 description = "Provider implementations for the ethers-rs crate"
@@ -14,35 +14,39 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-ethers-core = { version = "^0.5.0", path = "../ethers-core", default-features = false }
+ethers-core = { version = "^0.13.0", path = "../ethers-core", default-features = false }
 
 async-trait = { version = "0.1.50", default-features = false }
 hex = { version = "0.4.3", default-features = false, features = ["std"] }
-reqwest = { version = "0.11.6", default-features = false, features = ["json"] }
+reqwest = { version = "0.11.11", default-features = false, features = ["json"] }
 serde = { version = "1.0.124", default-features = false, features = ["derive"] }
-serde_json = { version = "1.0.64", default-features = false }
-thiserror = { version = "1.0.30", default-features = false }
+serde_json = { version = "1.0.64", default-features = false, features = ["raw_value"] }
+thiserror = { version = "1.0", default-features = false }
 url = { version = "2.2.2", default-features = false }
-auto_impl = { version = "0.4.1", default-features = false }
+auto_impl = { version = "1.0.1", default-features = false }
+http = { version = "0.2" }
+base64 = "0.13"
 
 # required for implementing stream on the filters
 futures-core = { version = "0.3.16", default-features = false }
-futures-util = { version = "0.3.17" }
+futures-util = { version = "^0.3" }
 futures-timer = { version = "3.0.2", default-features = false }
-futures-channel = { version = "0.3.16", default-features = false }
+futures-channel = { version = "0.3.16", default-features = false, optional = true }
 pin-project = { version = "1.0.7", default-features = false }
 
 # tracing
-tracing = { version = "0.1.29", default-features = false }
+tracing = { version = "0.1.35", default-features = false }
 tracing-futures = { version = "0.2.5", default-features = false, features = ["std-future"] }
 
 bytes = { version  = "1.1.0", default-features = false, optional = true }
+once_cell = "1.12.0"
+hashers = "1.0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # tokio
-tokio-util = { version = "0.6.8", default-features = false, features = ["io"], optional = true }
-tokio = { version = "1.5", default-features = false, optional = true }
-tokio-tungstenite = { version = "0.15.0", default-features = false, features = ["connect"], optional = true }
+tokio = { version = "1.18", features = ["time"] }
+tokio-tungstenite = { version = "0.17.1", default-features = false, features = ["connect"], optional = true }
+
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ws_stream_wasm = "0.7"
@@ -52,16 +56,21 @@ web-sys = { version  = "0.3", features = ["console"] }
 wasm-timer = "0.2"
 # this is currently necessary for `wasm-timer::Delay` to work
 parking_lot = { version = "0.11", features = ["wasm-bindgen"] }
+# NOTE: this enables wasm compatibility for getrandom indirectly
+getrandom = { version = "0.2", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokio = { version = "1.5", default-features = false, features = ["rt", "macros"] }
-tempfile = "3.2.0"
+tokio = { version = "1.18", default-features = false, features = ["rt", "macros", "time"] }
+tempfile = "3.3.0"
 
 [features]
-default = ["ws", "ipc", "rustls"]
+default = ["ws", "rustls"]
 celo = ["ethers-core/celo"]
-ws = ["tokio", "tokio-tungstenite"]
-ipc = ["tokio", "tokio/io-util", "tokio-util", "bytes"]
+ws = ["tokio-tungstenite", "futures-channel"]
+ipc = ["tokio/io-util", "bytes", "futures-channel"]
 
 openssl = ["tokio-tungstenite/native-tls", "reqwest/native-tls"]
-rustls = ["tokio-tungstenite/rustls-tls", "reqwest/rustls-tls"]
+# we use the webpki roots so we can build static binaries w/o any root cert dependencies
+# on the host
+rustls = ["tokio-tungstenite/rustls-tls-webpki-roots", "reqwest/rustls-tls"]
+dev-rpc = []

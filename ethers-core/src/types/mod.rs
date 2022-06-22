@@ -21,20 +21,26 @@ pub use address_or_bytes::AddressOrBytes;
 mod path_or_string;
 pub use path_or_string::PathOrString;
 
+mod u256;
+pub use u256::*;
+
 mod i256;
 pub use i256::{Sign, I256};
 
 mod bytes;
-pub use self::bytes::Bytes;
+pub use self::bytes::{deserialize_bytes, serialize_bytes, Bytes, ParseBytesError};
 
 mod block;
-pub use block::{Block, BlockId, BlockNumber};
+pub use block::{Block, BlockId, BlockNumber, TimeError};
 
 #[cfg(feature = "celo")]
 pub use block::Randomness;
 
 mod log;
-pub use log::{Filter, FilterBlockOption, Log, ValueOrArray};
+pub use log::Log;
+
+mod filter;
+pub use filter::*;
 
 mod ens;
 pub use ens::NameOrAddress;
@@ -48,5 +54,12 @@ pub use txpool::*;
 mod trace;
 pub use trace::*;
 
+mod chain;
+pub use chain::*;
+
 mod proof;
+
 pub use proof::*;
+
+mod fee;
+pub use fee::*;

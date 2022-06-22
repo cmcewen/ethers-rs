@@ -3,7 +3,7 @@ use super::{util, Context};
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::util::{ethers_contract_crate, ethers_core_crate, ethers_providers_crate};
+use ethers_core::macros::{ethers_contract_crate, ethers_core_crate, ethers_providers_crate};
 
 pub(crate) fn imports(name: &str) -> TokenStream {
     let doc = util::expand_doc(&format!("{} was auto-generated with ethers-rs Abigen. More information at: https://github.com/gakonst/ethers-rs", name));
@@ -30,9 +30,11 @@ pub(crate) fn imports(name: &str) -> TokenStream {
 }
 
 /// Generates the static `Abi` constants and the contract struct
-pub(crate) fn struct_declaration(cx: &Context, abi_name: &proc_macro2::Ident) -> TokenStream {
-    let name = &cx.contract_name;
+pub(crate) fn struct_declaration(cx: &Context) -> TokenStream {
+    let name = &cx.contract_ident;
     let abi = &cx.abi_str;
+
+    let abi_name = cx.inline_abi_ident();
 
     let ethers_core = ethers_core_crate();
     let ethers_providers = ethers_providers_crate();
@@ -50,14 +52,32 @@ pub(crate) fn struct_declaration(cx: &Context, abi_name: &proc_macro2::Ident) ->
         }
     };
 
+    let bytecode = if let Some(ref bytecode) = cx.contract_bytecode {
+        let bytecode_name = cx.inline_bytecode_ident();
+        let hex_bytecode = format!("{}", bytecode);
+        quote! {
+            /// Bytecode of the #name contract
+            pub static #bytecode_name: #ethers_contract::Lazy<#ethers_core::types::Bytes> = #ethers_contract::Lazy::new(|| #hex_bytecode.parse()
+                                                .expect("invalid bytecode"));
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         // Inline ABI declaration
         #abi_parse
 
+        #bytecode
+
         // Struct declaration
-        #[derive(Clone)]
         pub struct #name<M>(#ethers_contract::Contract<M>);
 
+        impl<M> Clone for #name<M> {
+            fn clone(&self) -> Self {
+                #name(self.0.clone())
+            }
+        }
 
         // Deref to the inner contract in order to access more specific functions functions
         impl<M> std::ops::Deref for #name<M> {

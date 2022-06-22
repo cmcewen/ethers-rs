@@ -1,9 +1,4 @@
-#![warn(
-    missing_debug_implementations,
-    missing_docs,
-    rust_2018_idioms,
-    unreachable_pub
-)]
+#![warn(missing_debug_implementations, missing_docs, rust_2018_idioms, unreachable_pub)]
 #![deny(broken_intra_doc_links)]
 #![doc(test(
     no_crate_inject,
@@ -34,7 +29,7 @@
 //!
 //! Contains all the [necessary data structures](core::types) for interacting
 //! with Ethereum, along with cryptographic utilities for signing and verifying
-//! ECDSA signatures on `secp256k1`. Bindings to the solidity compiler and `ganache-cli`
+//! ECDSA signatures on `secp256k1`. Bindings to the Solidity compiler, Anvil and `ganache-cli`
 //! are also provided as helpers. To simplify your imports, consider using the re-exported
 //! modules described in the next subsection.
 //!
@@ -70,12 +65,12 @@
 //!
 //! ## `middleware`
 //!
-//! In order to keep the ethers architecture as modular as possible, providers define a [`Middleware`]
-//! trait which defines all the methods to interact with an Ethereum node. By implementing the
-//! middleware trait, you are able to override the default behavior of methods and do things such
-//! as using other gas oracles, escalating your transactions' gas prices, or signing your transactions
-//! with a [`Signer`]. The middleware architecture allows users to either use one of the existing
-//! middleware, or they are free to write on of their own.
+//! In order to keep the ethers architecture as modular as possible, providers define a
+//! [`Middleware`] trait which defines all the methods to interact with an Ethereum node. By
+//! implementing the middleware trait, you are able to override the default behavior of methods and
+//! do things such as using other gas oracles, escalating your transactions' gas prices, or signing
+//! your transactions with a [`Signer`]. The middleware architecture allows users to either use one
+//! of the existing middleware, or they are free to write on of their own.
 //!
 //! [`Provider`]: providers::Provider
 //! [`Middleware`]: providers::Middleware
@@ -88,28 +83,65 @@
 //! [`utils`]: core::utils
 //! [`abi`]: core::abi
 //! [`types`]: core::types
-pub use ethers_contract as contract;
-pub use ethers_core as core;
-pub use ethers_middleware as middleware;
-pub use ethers_providers as providers;
-pub use ethers_signers as signers;
 
-// Re-export ethers_core::utils/types/abi
-// We hide these docs so that the rustdoc links send the visitor
-// to the corresponding crate, instead of the re-export
-#[doc(hidden)]
-pub use ethers_core::abi;
-#[doc(hidden)]
-pub use ethers_core::types;
-#[doc(hidden)]
-pub use ethers_core::utils;
+/// Address book consisting of frequently used contracts
+pub mod addressbook {
+    pub use ethers_addressbook::*;
+}
+
+#[doc = include_str!("../assets/CONTRACT_README.md")]
+pub mod contract {
+    pub use ethers_contract::*;
+}
+
+#[doc = include_str!("../assets/CORE_README.md")]
+pub mod core {
+    pub use ethers_core::*;
+}
+
+#[doc = include_str!("../assets/PROVIDERS_README.md")]
+pub mod providers {
+    pub use ethers_providers::*;
+}
+
+#[doc = include_str!("../assets/MIDDLEWARE_README.md")]
+pub mod middleware {
+    pub use ethers_middleware::*;
+}
+
+#[doc = include_str!("../assets/SIGNERS_README.md")]
+pub mod signers {
+    pub use ethers_signers::*;
+}
+
+#[doc = include_str!("../assets/SOLC_README.md")]
+pub mod solc {
+    pub use ethers_solc::*;
+}
+
+/// Etherscan bindings
+pub mod etherscan {
+    pub use ethers_etherscan::*;
+}
+
+pub use crate::core::{abi, types, utils};
 
 /// Easy imports of frequently used type definitions and traits
 #[doc(hidden)]
 pub mod prelude {
-    pub use ethers_contract::*;
-    pub use ethers_core::types::*;
-    pub use ethers_middleware::*;
-    pub use ethers_providers::*;
-    pub use ethers_signers::*;
+    pub use super::addressbook::*;
+
+    pub use super::contract::*;
+
+    pub use super::core::{types::*, *};
+
+    pub use super::middleware::*;
+
+    pub use super::providers::*;
+
+    pub use super::signers::*;
+
+    pub use super::solc::*;
+
+    pub use super::etherscan::*;
 }

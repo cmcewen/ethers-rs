@@ -1,12 +1,12 @@
-use crate::{log::LogMeta, stream::EventStream, ContractError, EthLogDecode};
+#![allow(clippy::return_self_not_must_use)]
 
+use crate::{log::LogMeta, stream::EventStream, ContractError, EthLogDecode};
 use ethers_core::{
     abi::{Detokenize, RawLog},
-    types::{BlockNumber, Filter, Log, ValueOrArray, H256},
+    types::{BlockNumber, Filter, Log, Topic, H256},
 };
 use ethers_providers::{FilterWatcher, Middleware, PubsubClient, SubscriptionStream};
-use std::borrow::Cow;
-use std::marker::PhantomData;
+use std::{borrow::Cow, marker::PhantomData};
 
 /// A trait for implementing event bindings
 pub trait EthEvent: Detokenize + Send + Sync {
@@ -36,11 +36,7 @@ pub trait EthEvent: Detokenize + Send + Sync {
         Self: Sized,
     {
         let filter = filter.event(&Self::abi_signature());
-        Event {
-            filter,
-            provider,
-            datatype: PhantomData,
-        }
+        Event { filter, provider, datatype: PhantomData }
     }
 }
 
@@ -90,25 +86,25 @@ impl<M, D: EthLogDecode> Event<'_, M, D> {
     }
 
     /// Sets the filter's 0th topic (typically the event name for non-anonymous events)
-    pub fn topic0<T: Into<ValueOrArray<H256>>>(mut self, topic: T) -> Self {
+    pub fn topic0<T: Into<Topic>>(mut self, topic: T) -> Self {
         self.filter.topics[0] = Some(topic.into());
         self
     }
 
     /// Sets the filter's 1st topic
-    pub fn topic1<T: Into<ValueOrArray<H256>>>(mut self, topic: T) -> Self {
+    pub fn topic1<T: Into<Topic>>(mut self, topic: T) -> Self {
         self.filter.topics[1] = Some(topic.into());
         self
     }
 
     /// Sets the filter's 2nd topic
-    pub fn topic2<T: Into<ValueOrArray<H256>>>(mut self, topic: T) -> Self {
+    pub fn topic2<T: Into<Topic>>(mut self, topic: T) -> Self {
         self.filter.topics[2] = Some(topic.into());
         self
     }
 
     /// Sets the filter's 3rd topic
-    pub fn topic3<T: Into<ValueOrArray<H256>>>(mut self, topic: T) -> Self {
+    pub fn topic3<T: Into<Topic>>(mut self, topic: T) -> Self {
         self.filter.topics[3] = Some(topic.into());
         self
     }
@@ -127,16 +123,9 @@ where
         EventStream<'a, FilterWatcher<'a, M::Provider, Log>, D, ContractError<M>>,
         ContractError<M>,
     > {
-        let filter = self
-            .provider
-            .watch(&self.filter)
-            .await
-            .map_err(ContractError::MiddlewareError)?;
-        Ok(EventStream::new(
-            filter.id,
-            filter,
-            Box::new(move |log| self.parse_log(log)),
-        ))
+        let filter =
+            self.provider.watch(&self.filter).await.map_err(ContractError::MiddlewareError)?;
+        Ok(EventStream::new(filter.id, filter, Box::new(move |log| self.parse_log(log))))
     }
 }
 
@@ -159,11 +148,7 @@ where
             .subscribe_logs(&self.filter)
             .await
             .map_err(ContractError::MiddlewareError)?;
-        Ok(EventStream::new(
-            filter.id,
-            filter,
-            Box::new(move |log| self.parse_log(log)),
-        ))
+        Ok(EventStream::new(filter.id, filter, Box::new(move |log| self.parse_log(log))))
     }
 }
 
@@ -175,11 +160,8 @@ where
     /// Queries the blockchain for the selected filter and returns a vector of matching
     /// event logs
     pub async fn query(&self) -> Result<Vec<D>, ContractError<M>> {
-        let logs = self
-            .provider
-            .get_logs(&self.filter)
-            .await
-            .map_err(ContractError::MiddlewareError)?;
+        let logs =
+            self.provider.get_logs(&self.filter).await.map_err(ContractError::MiddlewareError)?;
         let events = logs
             .into_iter()
             .map(|log| self.parse_log(log))
@@ -190,11 +172,8 @@ where
     /// Queries the blockchain for the selected filter and returns a vector of logs
     /// along with their metadata
     pub async fn query_with_meta(&self) -> Result<Vec<(D, LogMeta)>, ContractError<M>> {
-        let logs = self
-            .provider
-            .get_logs(&self.filter)
-            .await
-            .map_err(ContractError::MiddlewareError)?;
+        let logs =
+            self.provider.get_logs(&self.filter).await.map_err(ContractError::MiddlewareError)?;
         let events = logs
             .into_iter()
             .map(|log| {
@@ -206,11 +185,7 @@ where
         Ok(events)
     }
 
-    fn parse_log(&self, log: Log) -> Result<D, ContractError<M>> {
-        D::decode_log(&RawLog {
-            topics: log.topics,
-            data: log.data.to_vec(),
-        })
-        .map_err(From::from)
+    pub fn parse_log(&self, log: Log) -> Result<D, ContractError<M>> {
+        D::decode_log(&RawLog { topics: log.topics, data: log.data.to_vec() }).map_err(From::from)
     }
 }

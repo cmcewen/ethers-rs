@@ -1,16 +1,16 @@
-use anyhow::Result;
-use ethers::{prelude::*, utils::Ganache};
+use ethers::{prelude::*, utils::Anvil};
+use eyre::Result;
 use std::convert::TryFrom;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let ganache = Ganache::new().spawn();
+    let anvil = Anvil::new().spawn();
 
-    let wallet: LocalWallet = ganache.keys()[0].clone().into();
-    let wallet2: LocalWallet = ganache.keys()[1].clone().into();
+    let wallet: LocalWallet = anvil.keys()[0].clone().into();
+    let wallet2: LocalWallet = anvil.keys()[1].clone().into();
 
     // connect to the network
-    let provider = Provider::<Http>::try_from(ganache.endpoint())?;
+    let provider = Provider::<Http>::try_from(anvil.endpoint())?;
 
     // connect the wallet to the provider
     let client = SignerMiddleware::new(provider, wallet);
@@ -22,9 +22,7 @@ async fn main() -> Result<()> {
     let pending_tx = client.send_transaction(tx, None).await?;
 
     // get the mined tx
-    let receipt = pending_tx
-        .await?
-        .ok_or_else(|| anyhow::format_err!("tx dropped from mempool"))?;
+    let receipt = pending_tx.await?.ok_or_else(|| eyre::format_err!("tx dropped from mempool"))?;
     let tx = client.get_transaction(receipt.transaction_hash).await?;
 
     println!("Sent tx: {}\n", serde_json::to_string(&tx)?);

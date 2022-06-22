@@ -1,7 +1,10 @@
 //! Solidity struct definition parsing support
-use crate::abi::error::{bail, format_err, Result};
-use crate::abi::human_readable::{is_whitespace, parse_identifier};
-use crate::abi::{param_type::Reader, ParamType};
+use crate::abi::{
+    error::{bail, format_err, Result},
+    human_readable::{is_likely_tuple_not_uint8, is_whitespace, parse_identifier},
+    param_type::Reader,
+    ParamType,
+};
 
 /// A field declaration inside a struct
 #[derive(Debug, Clone, PartialEq)]
@@ -71,7 +74,7 @@ pub struct StructFieldDeclaration {
 }
 
 /// How the type of a struct field is referenced
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructType {
     /// The name of the struct (or rather the name of the rust type)
     name: String,
@@ -171,10 +174,7 @@ impl StructFieldType {
                                 }
                             }
                             Some(']') => {
-                                let ty = StructType {
-                                    name: ty,
-                                    projections,
-                                };
+                                let ty = StructType { name: ty, projections };
 
                                 return if size.is_empty() {
                                     Ok(FieldType::Struct(StructFieldType::Array(Box::new(
@@ -188,7 +188,7 @@ impl StructFieldType {
                                         Box::new(StructFieldType::Type(ty)),
                                         size,
                                     )))
-                                };
+                                }
                             }
                             Some(c) => {
                                 if c.is_numeric() {
@@ -260,11 +260,9 @@ impl SolStruct {
                             .map(parse_struct_field)
                             .collect::<Result<Vec<_>, _>>()?
                     };
-                    return Ok(SolStruct { name, fields });
+                    return Ok(SolStruct { name, fields })
                 }
-                Some(' ') | Some('\t') => {
-                    continue;
-                }
+                Some(' ') | Some('\t') => continue,
                 Some(c) => {
                     bail!("Illegal char `{}` at `{}`", c, s)
                 }
@@ -282,14 +280,20 @@ impl SolStruct {
         &self.fields
     }
 
-    /// If the struct only consists of elementary fields, this will return `ParamType::Tuple` with all those fields
+    /// Returns `true` if a field with an empty name exists
+    pub fn has_nameless_field(&self) -> bool {
+        self.fields.iter().any(|f| f.name.is_empty())
+    }
+
+    /// If the struct only consists of elementary fields, this will return `ParamType::Tuple` with
+    /// all those fields
     pub fn as_tuple(&self) -> Option<ParamType> {
         let mut params = Vec::with_capacity(self.fields.len());
         for field in self.fields() {
             if let FieldType::Elementary(ref param) = field.ty {
                 params.push(param.clone())
             } else {
-                return None;
+                return None
             }
         }
         Some(ParamType::Tuple(params))
@@ -303,10 +307,8 @@ fn strip_field_identifier(input: &mut &str) -> Result<String> {
         .next()
         .ok_or_else(|| format_err!("Expected field identifier"))
         .map(|mut s| parse_identifier(&mut s))??;
-    *input = iter
-        .next()
-        .ok_or_else(|| format_err!("Expected field type in `{}`", input))?
-        .trim_end();
+    *input =
+        iter.next().ok_or_else(|| format_err!("Expected field type in `{}`", input))?.trim_end();
     Ok(name)
 }
 
@@ -323,23 +325,26 @@ fn parse_struct_field(s: &str) -> Result<FieldDeclaration> {
             .trim_end();
     }
     let name = strip_field_identifier(&mut input)?;
-    Ok(FieldDeclaration {
-        name,
-        ty: parse_field_type(input)?,
-    })
+    Ok(FieldDeclaration { name, ty: parse_field_type(input)? })
 }
 
 fn parse_field_type(s: &str) -> Result<FieldType> {
     let mut input = s.trim_start();
     if input.starts_with("mapping") {
-        return Ok(FieldType::Mapping(Box::new(parse_mapping(input)?)));
+        return Ok(FieldType::Mapping(Box::new(parse_mapping(input)?)))
     }
     if input.ends_with(" payable") {
         // special case for `address payable`
         input = input[..input.len() - 7].trim_end();
     }
     if let Ok(ty) = Reader::read(input) {
-        Ok(FieldType::Elementary(ty))
+        // See `AbiParser::parse_type`
+        if is_likely_tuple_not_uint8(&ty, s) {
+            // likely that an unknown type was resolved as `uint8`
+            StructFieldType::parse(input.trim_end())
+        } else {
+            Ok(FieldType::Elementary(ty))
+        }
     } else {
         // parsing elementary datatype failed, try struct
         StructFieldType::parse(input.trim_end())
@@ -353,22 +358,24 @@ fn parse_mapping(s: &str) -> Result<MappingType> {
         bail!("Not a mapping `{}`", input)
     }
     input = input[7..].trim_start();
-    let mut iter = input
-        .trim_start_matches('(')
-        .trim_end_matches(')')
-        .splitn(2, "=>");
+    let mut iter = input.trim_start_matches('(').trim_end_matches(')').splitn(2, "=>");
     let key_type = iter
         .next()
         .ok_or_else(|| format_err!("Expected mapping key type at `{}`", input))
         .map(str::trim)
         .map(Reader::read)??;
 
-    if let ParamType::Array(_) | ParamType::FixedArray(_, _) | ParamType::Tuple(_) = &key_type {
-        bail!(
-            "Expected elementary mapping key type at `{}` got {:?}",
-            input,
-            key_type
-        )
+    let is_illegal_ty = if let ParamType::Array(_) |
+    ParamType::FixedArray(_, _) |
+    ParamType::Tuple(_) = &key_type
+    {
+        true
+    } else {
+        is_likely_tuple_not_uint8(&key_type, s)
+    };
+
+    if is_illegal_ty {
+        bail!("Expected elementary mapping key type at `{}` got {:?}", input, key_type)
     }
 
     let value_type = iter
@@ -377,10 +384,7 @@ fn parse_mapping(s: &str) -> Result<MappingType> {
         .map(str::trim)
         .map(parse_field_type)??;
 
-    Ok(MappingType {
-        key_type,
-        value_type,
-    })
+    Ok(MappingType { key_type, value_type })
 }
 
 #[cfg(test)]

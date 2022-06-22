@@ -26,7 +26,6 @@ pub static ADDRESS_BOOK: Lazy<HashMap<U256, Address>> = Lazy::new(|| {
 ///         }
 ///     );
 /// ```
-///
 // Auto-generated type-safe bindings
 pub use dsproxyfactory_mod::*;
 #[allow(clippy::too_many_arguments)]
@@ -47,8 +46,12 @@ mod dsproxyfactory_mod {
     pub static DSPROXYFACTORY_ABI: Lazy<Abi> = Lazy::new(|| {
         serde_json :: from_str ("[{\"constant\":true,\"inputs\":[{\"name\":\"\",\"type\":\"address\"}],\"name\":\"isProxy\",\"outputs\":[{\"name\":\"\",\"type\":\"bool\"}],\"payable\":false,\"stateMutability\":\"view\",\"type\":\"function\"},{\"constant\":true,\"inputs\":[],\"name\":\"cache\",\"outputs\":[{\"name\":\"\",\"type\":\"address\"}],\"payable\":false,\"stateMutability\":\"view\",\"type\":\"function\"},{\"constant\":false,\"inputs\":[],\"name\":\"build\",\"outputs\":[{\"name\":\"proxy\",\"type\":\"address\"}],\"payable\":false,\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"constant\":false,\"inputs\":[{\"name\":\"owner\",\"type\":\"address\"}],\"name\":\"build\",\"outputs\":[{\"name\":\"proxy\",\"type\":\"address\"}],\"payable\":false,\"stateMutability\":\"nonpayable\",\"type\":\"function\"},{\"anonymous\":false,\"inputs\":[{\"indexed\":true,\"name\":\"sender\",\"type\":\"address\"},{\"indexed\":true,\"name\":\"owner\",\"type\":\"address\"},{\"indexed\":false,\"name\":\"proxy\",\"type\":\"address\"},{\"indexed\":false,\"name\":\"cache\",\"type\":\"address\"}],\"name\":\"Created\",\"type\":\"event\"}]\n") . expect ("invalid abi")
     });
-    #[derive(Clone)]
     pub struct DsProxyFactory<M>(Contract<M>);
+    impl<M> Clone for DsProxyFactory<M> {
+        fn clone(&self) -> Self {
+            DsProxyFactory(self.0.clone())
+        }
+    }
     impl<M> std::ops::Deref for DsProxyFactory<M> {
         type Target = Contract<M>;
         fn deref(&self) -> &Self::Target {
@@ -57,12 +60,10 @@ mod dsproxyfactory_mod {
     }
     impl<M: Middleware> std::fmt::Debug for DsProxyFactory<M> {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.debug_tuple(stringify!(DsProxyFactory))
-                .field(&self.address())
-                .finish()
+            f.debug_tuple(stringify!(DsProxyFactory)).field(&self.address()).finish()
         }
     }
-    impl<'a, M: Middleware> DsProxyFactory<M> {
+    impl<M: Middleware> DsProxyFactory<M> {
         #[doc = r" Creates a new contract instance with the specified `ethers`"]
         #[doc = r" client at the given `Address`. The contract derefs to a `ethers::Contract`"]
         #[doc = r" object"]
@@ -104,7 +105,8 @@ mod dsproxyfactory_mod {
             self.0.event()
         }
 
-        /// Returns an [`Event`](ethers_contract::builders::Event) builder for all events of this contract
+        /// Returns an [`Event`](ethers_contract::builders::Event) builder for all events of this
+        /// contract
         pub fn events(&self) -> ethers_contract::builders::Event<M, CreatedFilter> {
             self.0.event_with_filter(Default::default())
         }

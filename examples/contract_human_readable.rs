@@ -1,9 +1,10 @@
-use anyhow::Result;
 use ethers::{
     prelude::*,
-    utils::{compile_and_launch_ganache, Ganache, Solc},
+    solc::{Project, ProjectPathsConfig},
+    utils::Anvil,
 };
-use std::{convert::TryFrom, sync::Arc, time::Duration};
+use eyre::Result;
+use std::{convert::TryFrom, path::PathBuf, sync::Arc, time::Duration};
 
 // Generate the type-safe contract bindings by providing the ABI
 // definition in human readable format
@@ -19,37 +20,36 @@ abigen!(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 1. compile the contract (note this requires that you are inside the `examples` directory) and launch ganache
-    let (compiled, ganache) =
-        compile_and_launch_ganache(Solc::new("**/contract.sol"), Ganache::new()).await?;
-    let contract = compiled
-        .get("SimpleStorage")
-        .expect("could not find contract");
+    // the directory we use is root-dir/examples
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    // we use `root` for both the project root and for where to search for contracts since
+    // everything is in the same directory
+    let paths = ProjectPathsConfig::builder().root(&root).sources(&root).build().unwrap();
 
-    // 2. instantiate our wallet
-    let wallet: LocalWallet = ganache.keys()[0].clone().into();
+    // get the solc project instance using the paths above
+    let project = Project::builder().paths(paths).ephemeral().no_artifacts().build().unwrap();
+    // compile the project and get the artifacts
+    let output = project.compile().unwrap();
+    let contract = output.find("SimpleStorage").expect("could not find contract").clone();
+    let (abi, bytecode, _) = contract.into_parts();
+
+    // 2. instantiate our wallet & anvil
+    let anvil = Anvil::new().spawn();
+    let wallet: LocalWallet = anvil.keys()[0].clone().into();
 
     // 3. connect to the network
     let provider =
-        Provider::<Http>::try_from(ganache.endpoint())?.interval(Duration::from_millis(10u64));
+        Provider::<Http>::try_from(anvil.endpoint())?.interval(Duration::from_millis(10u64));
 
     // 4. instantiate the client with the wallet
     let client = SignerMiddleware::new(provider, wallet);
     let client = Arc::new(client);
 
     // 5. create a factory which will be used to deploy instances of the contract
-    let factory = ContractFactory::new(
-        contract.abi.clone(),
-        contract.bytecode.clone(),
-        client.clone(),
-    );
+    let factory = ContractFactory::new(abi.unwrap(), bytecode.unwrap(), client.clone());
 
     // 6. deploy it with the constructor arguments
-    let contract = factory
-        .deploy("initial value".to_string())?
-        .legacy()
-        .send()
-        .await?;
+    let contract = factory.deploy("initial value".to_string())?.send().await?;
 
     // 7. get the contract's address
     let addr = contract.address();
@@ -59,19 +59,10 @@ async fn main() -> Result<()> {
 
     // 9. call the `setValue` method
     // (first `await` returns a PendingTransaction, second one waits for it to be mined)
-    let _receipt = contract
-        .set_value("hi".to_owned())
-        .legacy()
-        .send()
-        .await?
-        .await?;
+    let _receipt = contract.set_value("hi".to_owned()).send().await?.await?;
 
     // 10. get all events
-    let logs = contract
-        .value_changed_filter()
-        .from_block(0u64)
-        .query()
-        .await?;
+    let logs = contract.value_changed_filter().from_block(0u64).query().await?;
 
     // 11. get the new value
     let value = contract.get_value().call().await?;

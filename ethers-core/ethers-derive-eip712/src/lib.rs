@@ -18,7 +18,7 @@
 //!
 //! # Example Usage
 //!
-//! ```rust
+//! ```ignore
 //! use ethers_contract::EthAbiType;
 //! use ethers_derive_eip712::*;
 //! use ethers_core::types::{transaction::eip712::Eip712, H160};
@@ -50,7 +50,7 @@
 //!     project: "radicle-reward".to_string(),
 //! };
 //!
-//! let hash = puzzle.encode_eip712()?;
+//! let hash = puzzle.encode_eip712().unwrap();
 //! ```
 //!
 //! # Limitations
@@ -59,10 +59,13 @@
 //!
 //! There is an Inner helper attribute `#[eip712]` for fields that will eventually be used to
 //! determine if there is a nested eip712 struct. However, this work is not yet complete.
-//!
+
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(unused_crate_dependencies)]
+
 use std::convert::TryFrom;
 
-use ethers_core::types::transaction::eip712;
+use ethers_core::{macros::ethers_core_crate, types::transaction::eip712};
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -95,7 +98,7 @@ fn impl_eip_712_macro(ast: &syn::DeriveInput) -> TokenStream {
         Err(e) => {
             return TokenStream::from(
                 syn::Error::new(ast.ident.span(), e.to_string()).to_compile_error(),
-            );
+            )
         }
     };
 
@@ -105,15 +108,16 @@ fn impl_eip_712_macro(ast: &syn::DeriveInput) -> TokenStream {
         Err(e) => return TokenStream::from(e),
     };
 
-    // Compute the type hash for the derived struct using the parsed fields from above;
-    let type_hash = hex::encode(eip712::make_type_hash(
-        primary_type.clone().to_string(),
-        &parsed_fields,
-    ));
+    // Compute the type hash for the derived struct using the parsed fields from above.
+    let type_hash =
+        hex::encode(eip712::make_type_hash(primary_type.clone().to_string(), &parsed_fields));
+
+    // Use reference to ethers_core instead of directly using the crate itself.
+    let ethers_core = ethers_core_crate();
 
     let implementation = quote! {
         impl Eip712 for #primary_type {
-            type Error = ethers_core::types::transaction::eip712::Eip712Error;
+            type Error = #ethers_core::types::transaction::eip712::Eip712Error;
 
             fn type_hash() -> Result<[u8; 32], Self::Error> {
                 use std::convert::TryFrom;
@@ -130,34 +134,34 @@ fn impl_eip_712_macro(ast: &syn::DeriveInput) -> TokenStream {
                 Ok(byte_array)
             }
 
-            fn domain(&self) -> Result<ethers_core::types::transaction::eip712::EIP712Domain, Self::Error> {
-                let domain: ethers_core::types::transaction::eip712::EIP712Domain = serde_json::from_str(#domain_str)?;
+            fn domain(&self) -> Result<#ethers_core::types::transaction::eip712::EIP712Domain, Self::Error> {
+                let domain: #ethers_core::types::transaction::eip712::EIP712Domain = serde_json::from_str(#domain_str)?;
 
                 Ok(domain)
             }
 
             fn struct_hash(&self) -> Result<[u8; 32], Self::Error> {
-                use ethers_core::abi::Tokenizable;
-                let mut items = vec![ethers_core::abi::Token::Uint(
-                    ethers_core::types::U256::from(&Self::type_hash()?[..]),
+                use #ethers_core::abi::Tokenizable;
+                let mut items = vec![#ethers_core::abi::Token::Uint(
+                    #ethers_core::types::U256::from(&Self::type_hash()?[..]),
                 )];
 
-                if let ethers_core::abi::Token::Tuple(tokens) = self.clone().into_token() {
+                if let #ethers_core::abi::Token::Tuple(tokens) = self.clone().into_token() {
                     for token in tokens {
                         match &token {
-                            ethers_core::abi::Token::Tuple(t) => {
+                            #ethers_core::abi::Token::Tuple(t) => {
                                 // TODO: check for nested Eip712 Type;
                                 // Challenge is determining the type hash
                                 return Err(Self::Error::NestedEip712StructNotImplemented);
                             },
                             _ => {
-                                items.push(ethers_core::types::transaction::eip712::encode_eip712_type(token));
+                                items.push(#ethers_core::types::transaction::eip712::encode_eip712_type(token));
                             }
                         }
                     }
                 }
 
-                let struct_hash = ethers_core::utils::keccak256(ethers_core::abi::encode(
+                let struct_hash = #ethers_core::utils::keccak256(#ethers_core::abi::encode(
                     &items,
                 ));
 

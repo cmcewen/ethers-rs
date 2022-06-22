@@ -1,17 +1,19 @@
 //! This module contains an 256-bit signed integer implementation.
-//! This module was derived for ethers-core via https://github.com/gnosis/ethcontract-rs/
+//! This module was derived for ethers-core via <https://github.com/gnosis/ethcontract-rs/>
 #![allow(clippy::wrong_self_convention)]
-use crate::abi::{InvalidOutputType, Token, Tokenizable};
-use crate::types::U256;
+use crate::{
+    abi::{InvalidOutputType, Token, Tokenizable},
+    types::U256,
+};
 use ethabi::ethereum_types::FromDecStrErr;
 use serde::{Deserialize, Serialize};
-use std::cmp;
-use std::convert::{TryFrom, TryInto};
-use std::fmt;
-use std::iter;
-use std::ops;
-use std::str;
-use std::{i128, i64, u64};
+use std::{
+    cmp,
+    convert::{TryFrom, TryInto},
+    fmt, i128, i64, iter, ops,
+    ops::Sub,
+    str, u64,
+};
 use thiserror::Error;
 
 /// The error type that is returned when conversion to or from a 256-bit integer
@@ -291,7 +293,7 @@ impl I256 {
 
     /// Convert from a decimal string.
     pub fn from_dec_str(value: &str) -> Result<Self, ParseI256Error> {
-        let (sign, value) = match value.as_bytes().get(0) {
+        let (sign, value) = match value.as_bytes().first() {
             Some(b'+') => (Sign::Positive, &value[1..]),
             Some(b'-') => (Sign::Negative, &value[1..]),
             _ => (Sign::Positive, value),
@@ -306,7 +308,7 @@ impl I256 {
 
     /// Convert from a hexadecimal string.
     pub fn from_hex_str(value: &str) -> Result<Self, ParseI256Error> {
-        let (sign, value) = match value.as_bytes().get(0) {
+        let (sign, value) = match value.as_bytes().first() {
             Some(b'+') => (Sign::Positive, &value[1..]),
             Some(b'-') => (Sign::Negative, &value[1..]),
             _ => (Sign::Positive, value),
@@ -314,7 +316,7 @@ impl I256 {
 
         // NOTE: Do the hex conversion here as `U256` implementation can panic.
         if value.len() > 64 {
-            return Err(ParseI256Error::IntegerOverflow);
+            return Err(ParseI256Error::IntegerOverflow)
         }
         let mut abs = U256::zero();
         for (i, word) in value.as_bytes().rchunks(16).enumerate() {
@@ -329,6 +331,7 @@ impl I256 {
     }
 
     /// Returns the sign of the number.
+    #[must_use]
     pub fn signum(self) -> Self {
         self.signum64().into()
     }
@@ -370,6 +373,7 @@ impl I256 {
     /// # Panics
     ///
     /// In debug mode, will panic if it overflows.
+    #[must_use]
     pub fn abs(self) -> Self {
         handle_overflow(self.overflowing_abs())
     }
@@ -402,12 +406,14 @@ impl I256 {
 
     /// Saturating absolute value. Computes `self.abs()`, returning `MAX` if
     /// `self == MIN` instead of overflowing.
+    #[must_use]
     pub fn saturating_abs(self) -> Self {
         self.checked_abs().unwrap_or(I256::MAX)
     }
 
     /// Wrapping absolute value. Computes `self.abs()`, wrapping around at the
     /// boundary of the type.
+    #[must_use]
     pub fn wrapping_abs(self) -> Self {
         let (result, _) = self.overflowing_abs();
         result
@@ -446,12 +452,14 @@ impl I256 {
 
     /// Saturating negation. Computes `self.neg()`, returning `MAX` if
     /// `self == MIN` instead of overflowing.
+    #[must_use]
     pub fn saturating_neg(self) -> Self {
         self.checked_neg().unwrap_or(I256::MAX)
     }
 
     /// Wrapping negation. Computes `self.neg()`, returning `MIN` if
     /// `self == MIN` instead of overflowing.
+    #[must_use]
     pub fn wrapping_neg(self) -> Self {
         let (result, _) = self.overflowing_neg();
         result
@@ -464,8 +472,7 @@ impl I256 {
 
         // NOTE: We need to deal with two special cases:
         //   - the number is 0
-        //   - the number is a negative power of `2`. These numbers are written
-        //     as `0b11..1100..00`.
+        //   - the number is a negative power of `2`. These numbers are written as `0b11..1100..00`.
         //   In the case of a negative power of two, the number of bits required
         //   to represent the negative signed value is equal to the number of
         //   bits required to represent its absolute value as an unsigned
@@ -550,8 +557,8 @@ impl I256 {
         //   the result.
         let overflow = matches!(
             (self.sign(), rhs.sign(), result.sign()),
-            (Sign::Positive, Sign::Positive, Sign::Negative)
-                | (Sign::Negative, Sign::Negative, Sign::Positive)
+            (Sign::Positive, Sign::Positive, Sign::Negative) |
+                (Sign::Negative, Sign::Negative, Sign::Positive)
         );
 
         (result, overflow)
@@ -568,6 +575,7 @@ impl I256 {
     }
 
     /// Addition which saturates at the maximum value (Self::max_value()).
+    #[must_use]
     pub fn saturating_add(self, other: Self) -> Self {
         let (result, overflow) = self.overflowing_add(other);
         if overflow {
@@ -581,6 +589,7 @@ impl I256 {
     }
 
     /// Wrapping addition.
+    #[must_use]
     pub fn wrapping_add(self, other: Self) -> Self {
         let (result, _) = self.overflowing_add(other);
         result
@@ -603,8 +612,8 @@ impl I256 {
         //   the result.
         let overflow = matches!(
             (self.sign(), rhs.sign(), result.sign()),
-            (Sign::Positive, Sign::Negative, Sign::Negative)
-                | (Sign::Negative, Sign::Positive, Sign::Positive)
+            (Sign::Positive, Sign::Negative, Sign::Negative) |
+                (Sign::Negative, Sign::Positive, Sign::Positive)
         );
 
         (result, overflow)
@@ -621,6 +630,7 @@ impl I256 {
     }
 
     /// Subtraction which saturates at zero.
+    #[must_use]
     pub fn saturating_sub(self, other: Self) -> Self {
         let (result, overflow) = self.overflowing_sub(other);
         if overflow {
@@ -634,6 +644,7 @@ impl I256 {
     }
 
     /// Wrapping subtraction.
+    #[must_use]
     pub fn wrapping_sub(self, other: Self) -> Self {
         let (result, _) = self.overflowing_sub(other);
         result
@@ -663,6 +674,7 @@ impl I256 {
     }
 
     /// Multiplication which saturates at the maximum value..
+    #[must_use]
     pub fn saturating_mul(self, rhs: Self) -> Self {
         self.checked_mul(rhs).unwrap_or_else(|| {
             match Sign::from_signum64(self.signum64() * rhs.signum64()) {
@@ -673,6 +685,7 @@ impl I256 {
     }
 
     /// Wrapping multiplication.
+    #[must_use]
     pub fn wrapping_mul(self, rhs: Self) -> Self {
         let (result, _) = self.overflowing_mul(rhs);
         result
@@ -703,12 +716,14 @@ impl I256 {
     }
 
     /// Division which saturates at the maximum value.
+    #[must_use]
     pub fn saturating_div(self, rhs: Self) -> Self {
         // There is only one overflow (I256::MIN / -1 = I256::MAX)
         self.checked_div(rhs).unwrap_or(I256::MAX)
     }
 
     /// Wrapping division.
+    #[must_use]
     pub fn wrapping_div(self, rhs: Self) -> Self {
         self.overflowing_div(rhs).0
     }
@@ -738,6 +753,7 @@ impl I256 {
 
     /// Wrapping remainder. Returns the result of the operation %
     /// regardless of whether or not the division overflowed.
+    #[must_use]
     pub fn wrapping_rem(self, rhs: Self) -> Self {
         self.overflowing_rem(rhs).0
     }
@@ -746,24 +762,24 @@ impl I256 {
     ///
     /// This computes the integer `n` such that `self = n * rhs + self.rem_euclid(rhs)`,
     /// with `0 <= self.rem_euclid(rhs) < rhs`.
-    /// In other words, the result is `self / rhs` rounded to the integer `n` such that `self >= n * rhs`:
+    /// In other words, the result is `self / rhs` rounded to the integer `n` such that `self >= n *
+    /// rhs`:
     /// * If `self > 0`, this is equal to round towards zero (the default in Rust);
     /// * If `self < 0`, this is equal to round towards +/- infinity.
+    #[must_use]
     pub fn div_euclid(self, rhs: Self) -> Self {
         let q = self / rhs;
         if (self % rhs).is_negative() {
-            return if rhs.is_positive() {
-                q - I256::one()
-            } else {
-                q + I256::one()
-            };
+            return if rhs.is_positive() { q - I256::one() } else { q + I256::one() }
         }
         q
     }
 
     /// Calculates the least non-negative remainder of self (mod rhs).
     /// This is done as if by the _Euclidean division algorithm_
-    /// given `r = self.rem_euclid(rhs)`, `self = rhs * self.div_euclid(rhs) + r, and 0 <= r < abs(rhs)`.
+    /// given `r = self.rem_euclid(rhs)`, `self = rhs * self.div_euclid(rhs) + r, and 0 <= r <
+    /// abs(rhs)`.
+    #[must_use]
     pub fn rem_euclid(self, rhs: Self) -> Self {
         let r = self % rhs;
         if r < Self::zero() {
@@ -804,6 +820,7 @@ impl I256 {
     /// (where `MIN` is the negative minimal value for the type).
     /// This is equivalent to `-MIN`, a positive value that is too large to represent in the type.
     /// In this case, this method returns `MIN` itself.
+    #[must_use]
     pub fn wrapping_div_euclid(self, rhs: Self) -> Self {
         self.overflowing_div_euclid(rhs).0
     }
@@ -826,6 +843,7 @@ impl I256 {
     /// (where `MIN` is the negative minimal value for the type).
     /// In this case, this method returns `0`.
     /// Panics when `rhs == 0`
+    #[must_use]
     pub fn wrapping_rem_euclid(self, rhs: Self) -> Self {
         self.overflowing_rem_euclid(rhs).0
     }
@@ -870,6 +888,7 @@ impl I256 {
     /// # Panics
     ///
     /// Panics if the result overflows the type in debug mode.
+    #[must_use]
     pub fn pow(self, exp: u32) -> Self {
         handle_overflow(self.overflowing_pow(exp))
     }
@@ -898,6 +917,7 @@ impl I256 {
 
     /// Raises self to the power of `exp`, saturating at the numeric bounds
     /// instead of overflowing.
+    #[must_use]
     pub fn saturating_pow(self, exp: u32) -> Self {
         let (result, overflow) = self.overflowing_pow(exp);
         if overflow {
@@ -912,9 +932,39 @@ impl I256 {
 
     /// Wrapping powolute value. Computes `self.pow()`, wrapping around at the
     /// boundary of the type.
+    #[must_use]
     pub fn wrapping_pow(self, exp: u32) -> Self {
         let (result, _) = self.overflowing_pow(exp);
         result
+    }
+
+    /// Arithmetic Shift Right operation. Shifts `shift` number of times to the right maintaining
+    /// the original sign. If the number is positive this is the same as logic shift right.
+    pub fn asr(self, shift: u32) -> Self {
+        // Avoid shifting if we are going to know the result regardless of the value.
+        if shift == 0 {
+            self
+        } else if shift >= 255u32 {
+            match self.sign() {
+                // It's always going to be zero (i.e. 00000000...00000000)
+                Sign::Positive => Self::zero(),
+                // It's always going to be -1 (i.e. 11111111...11111111)
+                Sign::Negative => Self::from(-1i8),
+            }
+        } else {
+            // Perform the shift.
+            match self.sign() {
+                Sign::Positive => self >> shift,
+                // We need to do: `for 0..shift { self >> 1 | 2^255 }`
+                // We can avoid the loop by doing: `self >> shift | ~(2^(255 - shift) - 1)`
+                // where '~' represents ones complement
+                Sign::Negative => {
+                    let bitwise_or =
+                        Self::from_raw(!U256::from(2u8).pow(U256::from(255u32 - shift)).sub(1u8));
+                    (self >> shift) | bitwise_or
+                }
+            }
+        }
     }
 }
 
@@ -1257,6 +1307,7 @@ mod tests {
     use crate::abi::Tokenizable;
     use once_cell::sync::Lazy;
     use serde_json::json;
+    use std::ops::Neg;
 
     static MIN_ABS: Lazy<U256> = Lazy::new(|| U256::from(1) << 255);
 
@@ -1410,22 +1461,10 @@ mod tests {
         assert_eq!(format!("{:+x}", positive), format!("+{:x}", unsigned));
         assert_eq!(format!("{:+x}", negative), format!("-{:x}", unsigned));
 
-        assert_eq!(
-            format!("{:X}", positive),
-            format!("{:x}", unsigned).to_uppercase()
-        );
-        assert_eq!(
-            format!("{:X}", negative),
-            format!("-{:x}", unsigned).to_uppercase()
-        );
-        assert_eq!(
-            format!("{:+X}", positive),
-            format!("+{:x}", unsigned).to_uppercase()
-        );
-        assert_eq!(
-            format!("{:+X}", negative),
-            format!("-{:x}", unsigned).to_uppercase()
-        );
+        assert_eq!(format!("{:X}", positive), format!("{:x}", unsigned).to_uppercase());
+        assert_eq!(format!("{:X}", negative), format!("-{:x}", unsigned).to_uppercase());
+        assert_eq!(format!("{:+X}", positive), format!("+{:x}", unsigned).to_uppercase());
+        assert_eq!(format!("{:+X}", negative), format!("-{:x}", unsigned).to_uppercase());
     }
 
     #[test]
@@ -1456,24 +1495,19 @@ mod tests {
         assert!(I256::zero().is_zero());
 
         assert_eq!(
-            I256::from_dec_str("314159265358979323846264338327950288419716")
-                .unwrap()
-                .signum(),
+            I256::from_dec_str("314159265358979323846264338327950288419716").unwrap().signum(),
             I256::one(),
         );
         assert_eq!(
-            I256::from_dec_str("-314159265358979323846264338327950288419716")
-                .unwrap()
-                .signum(),
+            I256::from_dec_str("-314159265358979323846264338327950288419716").unwrap().signum(),
             I256::minus_one(),
         );
     }
 
     #[test]
     fn abs() {
-        let positive = I256::from_dec_str("314159265358979323846264338327950288419716")
-            .unwrap()
-            .signum();
+        let positive =
+            I256::from_dec_str("314159265358979323846264338327950288419716").unwrap().signum();
         let negative = -positive;
 
         assert_eq!(positive.abs(), positive);
@@ -1487,9 +1521,8 @@ mod tests {
 
     #[test]
     fn neg() {
-        let positive = I256::from_dec_str("314159265358979323846264338327950288419716")
-            .unwrap()
-            .signum();
+        let positive =
+            I256::from_dec_str("314159265358979323846264338327950288419716").unwrap().signum();
         let negative = -positive;
 
         assert_eq!(-positive, negative);
@@ -1521,14 +1554,38 @@ mod tests {
     }
 
     #[test]
+    fn arithmetic_shift_right() {
+        let value = I256::from_raw(U256::from(2u8).pow(U256::from(254u8))).neg();
+        let expected_result = I256::from_raw(U256::MAX.sub(1u8));
+        assert_eq!(value.asr(253u32), expected_result, "1011...1111 >> 253 was not 1111...1110");
+
+        let value = I256::from(-1i8);
+        let expected_result = I256::from(-1i8);
+        assert_eq!(value.asr(250u32), expected_result, "-1 >> any_amount was not -1");
+
+        let value = I256::from_raw(U256::from(2u8).pow(U256::from(254u8))).neg();
+        let expected_result = I256::from(-1i8);
+        assert_eq!(value.asr(255u32), expected_result, "1011...1111 >> 255 was not -1");
+
+        let value = I256::from_raw(U256::from(2u8).pow(U256::from(254u8))).neg();
+        let expected_result = I256::from(-1i8);
+        assert_eq!(value.asr(1024u32), expected_result, "1011...1111 >> 1024 was not -1");
+
+        let value = I256::from(1024i32);
+        let expected_result = I256::from(32i32);
+        assert_eq!(value.asr(5u32), expected_result, "1024 >> 5 was not 32");
+
+        let value = I256::MAX;
+        let expected_result = I256::zero();
+        assert_eq!(value.asr(255u32), expected_result, "I256::MAX >> 255 was not 0");
+    }
+
+    #[test]
     fn addition() {
         assert_eq!(I256::MIN.overflowing_add(I256::MIN), (I256::zero(), true));
         assert_eq!(I256::MAX.overflowing_add(I256::MAX), (I256::from(-2), true));
 
-        assert_eq!(
-            I256::MIN.overflowing_add(I256::minus_one()),
-            (I256::MAX, true)
-        );
+        assert_eq!(I256::MIN.overflowing_add(I256::minus_one()), (I256::MAX, true));
         assert_eq!(I256::MAX.overflowing_add(I256::one()), (I256::MIN, true));
 
         assert_eq!(I256::MAX + I256::MIN, I256::minus_one());
@@ -1544,16 +1601,10 @@ mod tests {
     #[allow(clippy::eq_op)]
     fn subtraction() {
         assert_eq!(I256::MIN.overflowing_sub(I256::MAX), (I256::one(), true));
-        assert_eq!(
-            I256::MAX.overflowing_sub(I256::MIN),
-            (I256::minus_one(), true)
-        );
+        assert_eq!(I256::MAX.overflowing_sub(I256::MIN), (I256::minus_one(), true));
 
         assert_eq!(I256::MIN.overflowing_sub(I256::one()), (I256::MAX, true));
-        assert_eq!(
-            I256::MAX.overflowing_sub(I256::minus_one()),
-            (I256::MIN, true)
-        );
+        assert_eq!(I256::MAX.overflowing_sub(I256::minus_one()), (I256::MIN, true));
 
         assert_eq!(I256::zero().overflowing_sub(I256::MIN), (I256::MIN, true));
 
@@ -1623,10 +1674,7 @@ mod tests {
         assert_eq!((-a).div_euclid(-b), I256::from(2)); // -7 >= -4 * 2
 
         // Overflowing
-        assert_eq!(
-            I256::MIN.overflowing_div_euclid(-I256::one()),
-            (I256::MIN, true)
-        );
+        assert_eq!(I256::MIN.overflowing_div_euclid(-I256::one()), (I256::MIN, true));
         // Wrapping
         assert_eq!(I256::MIN.wrapping_div_euclid(-I256::one()), I256::MIN);
         // // Checked
@@ -1646,20 +1694,11 @@ mod tests {
 
         // Overflowing
         assert_eq!(a.overflowing_rem_euclid(b), (I256::from(3), false));
-        assert_eq!(
-            I256::min_value().overflowing_rem_euclid(-I256::one()),
-            (I256::zero(), true)
-        );
+        assert_eq!(I256::min_value().overflowing_rem_euclid(-I256::one()), (I256::zero(), true));
 
         // Wrapping
-        assert_eq!(
-            I256::from(100).wrapping_rem_euclid(I256::from(10)),
-            I256::zero()
-        );
-        assert_eq!(
-            I256::min_value().wrapping_rem_euclid(-I256::one()),
-            I256::zero()
-        );
+        assert_eq!(I256::from(100).wrapping_rem_euclid(I256::from(10)), I256::zero());
+        assert_eq!(I256::min_value().wrapping_rem_euclid(-I256::one()), I256::zero());
 
         // Checked
         assert_eq!(a.checked_rem_euclid(b), Some(I256::from(3)));
@@ -1677,7 +1716,7 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic)]
     fn div_euclid_overflow() {
-        I256::MIN.div_euclid(-I256::one());
+        let _ = I256::MIN.div_euclid(-I256::one());
     }
 
     #[test]
@@ -1689,10 +1728,7 @@ mod tests {
     #[test]
     fn remainder() {
         // The only case for overflow.
-        assert_eq!(
-            I256::MIN.overflowing_rem(I256::from(-1)),
-            (I256::zero(), true)
-        );
+        assert_eq!(I256::MIN.overflowing_rem(I256::from(-1)), (I256::zero(), true));
         assert_eq!(I256::from(-5) % I256::from(-2), I256::from(-1));
         assert_eq!(I256::from(5) % I256::from(-2), I256::one());
         assert_eq!(I256::from(-5) % I256::from(2), I256::from(-1));
@@ -1728,13 +1764,7 @@ mod tests {
         assert_eq!(I256::from(42).into_token(), 42i32.into_token());
         assert_eq!(I256::minus_one().into_token(), Token::Int(U256::MAX),);
 
-        assert_eq!(
-            I256::from_token(42i32.into_token()).unwrap(),
-            I256::from(42),
-        );
-        assert_eq!(
-            I256::from_token(U256::MAX.into_token()).unwrap(),
-            I256::minus_one(),
-        );
+        assert_eq!(I256::from_token(42i32.into_token()).unwrap(), I256::from(42),);
+        assert_eq!(I256::from_token(U256::MAX.into_token()).unwrap(), I256::minus_one(),);
     }
 }

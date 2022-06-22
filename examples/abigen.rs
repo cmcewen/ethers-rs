@@ -1,6 +1,6 @@
-use ethers::{contract::Abigen, utils::Solc};
+use ethers::{contract::Abigen, solc::Solc};
 
-fn main() -> anyhow::Result<()> {
+fn main() -> eyre::Result<()> {
     let mut args = std::env::args();
     args.next().unwrap(); // skip program name
 
@@ -9,10 +9,11 @@ fn main() -> anyhow::Result<()> {
 
     println!("Generating bindings for {}\n", contract);
 
-    // compile it if needed
+    // compile it
     let abi = if contract.ends_with(".sol") {
-        let contracts = Solc::new(&contract).build_raw()?;
-        contracts.get(&contract_name).unwrap().abi.clone()
+        let contracts = Solc::default().compile_source(&contract)?;
+        let abi = contracts.get(&contract, &contract_name).unwrap().abi.unwrap();
+        serde_json::to_string(abi).unwrap()
     } else {
         contract
     };

@@ -1,13 +1,12 @@
 use ethers::{
-    contract::Eip712,
-    contract::EthAbiType,
+    contract::{Eip712, EthAbiType},
     core::types::transaction::eip712::Eip712,
     types::{Address, U256},
 };
 
 // Generate the EIP712 permit hash to sign for a Uniswap V2 pair.
-// https://eips.ethereum.org/EIPS/eip-712
-// https://eips.ethereum.org/EIPS/eip-2612
+// <https://eips.ethereum.org/EIPS/eip-712>
+// <https://eips.ethereum.org/EIPS/eip-2612>
 #[derive(Eip712, EthAbiType, Clone)]
 #[eip712(
     name = "Uniswap V2",

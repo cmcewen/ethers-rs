@@ -1,88 +1,14 @@
 use ethers_core::types::Address;
+use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
-use cargo_metadata::{DependencyKind, MetadataCommand};
+use eyre::Result;
 use inflector::Inflector;
-use once_cell::sync::Lazy;
 use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::quote;
 
 use syn::{Ident as SynIdent, Path};
 
-/// See `determine_ethers_crates`
-///
-/// This ensures that the `MetadataCommand` is only run once
-static ETHERS_CRATES: Lazy<(&'static str, &'static str, &'static str)> =
-    Lazy::new(determine_ethers_crates);
-
-/// Convenience function to turn the `ethers_core` name in `ETHERS_CRATE` into a `Path`
-pub fn ethers_core_crate() -> Path {
-    syn::parse_str(ETHERS_CRATES.0).expect("valid path; qed")
-}
-/// Convenience function to turn the `ethers_contract` name in `ETHERS_CRATE` into an `Path`
-pub fn ethers_contract_crate() -> Path {
-    syn::parse_str(ETHERS_CRATES.1).expect("valid path; qed")
-}
-pub fn ethers_providers_crate() -> Path {
-    syn::parse_str(ETHERS_CRATES.2).expect("valid path; qed")
-}
-
-/// The crates name to use when deriving macros: (`core`, `contract`)
-///
-/// We try to determine which crate ident to use based on the dependencies of
-/// the project in which the macro is used. This is useful because the macros,
-/// like `EthEvent` are provided by the `ethers-contract` crate which depends on
-/// `ethers_core`. Most commonly `ethers` will be used as dependency which
-/// reexports all the different crates, essentially `ethers::core` is
-/// `ethers_core` So depending on the dependency used `ethers` ors `ethers_core
-/// | ethers_contract`, we need to use the fitting crate ident when expand the
-/// macros This will attempt to parse the current `Cargo.toml` and check the
-/// ethers related dependencies.
-///
-/// This process is a bit hacky, we run `cargo metadata` internally which
-/// resolves the current package but creates a new `Cargo.lock` file in the
-/// process. This is not a problem for regular workspaces but becomes an issue
-/// during publishing with `cargo publish` if the project does not ignore
-/// `Cargo.lock` in `.gitignore`, because then cargo can't proceed with
-/// publishing the crate because the created `Cargo.lock` leads to a modified
-/// workspace, not the `CARGO_MANIFEST_DIR` but the workspace `cargo publish`
-/// created in `./target/package/..`. Therefore we check prior to executing
-/// `cargo metadata` if a `Cargo.lock` file exists and delete it afterwards if
-/// it was created by `cargo metadata`.
-pub fn determine_ethers_crates() -> (&'static str, &'static str, &'static str) {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("No Manifest found");
-
-    // check if the lock file exists, if it's missing we need to clean up afterward
-    let lock_file = format!("{}/Cargo.lock", manifest_dir);
-    let needs_lock_file_cleanup = !std::path::Path::new(&lock_file).exists();
-
-    let res = MetadataCommand::new()
-        .manifest_path(&format!("{}/Cargo.toml", manifest_dir))
-        .exec()
-        .ok()
-        .and_then(|metadata| {
-            metadata.root_package().and_then(|pkg| {
-                pkg.dependencies
-                    .iter()
-                    .filter(|dep| dep.kind == DependencyKind::Normal)
-                    .find_map(|dep| {
-                        (dep.name == "ethers")
-                            .then(|| ("ethers::core", "ethers::contract", "ethers::providers"))
-                    })
-            })
-        })
-        .unwrap_or(("ethers_core", "ethers_contract", "ethers_providers"));
-
-    if needs_lock_file_cleanup {
-        // delete the `Cargo.lock` file that was created by `cargo metadata`
-        // if the package is not part of a workspace
-        let _ = std::fs::remove_file(lock_file);
-    }
-
-    res
-}
-
-/// Expands a identifier string into an token.
+/// Expands a identifier string into a token.
 pub fn ident(name: &str) -> Ident {
     Ident::new(name, Span::call_site())
 }
@@ -93,6 +19,48 @@ pub fn ident(name: &str) -> Ident {
 /// Parsing keywords like `self` can fail, in this case we add an underscore.
 pub fn safe_ident(name: &str) -> Ident {
     syn::parse_str::<SynIdent>(name).unwrap_or_else(|_| ident(&format!("{}_", name)))
+}
+
+///  Converts a `&str` to `snake_case` `String` while respecting identifier rules
+pub fn safe_snake_case(ident: &str) -> String {
+    safe_identifier_name(ident.to_snake_case())
+}
+
+///  Converts a `&str` to `PascalCase` `String` while respecting identifier rules
+pub fn safe_pascal_case(ident: &str) -> String {
+    safe_identifier_name(ident.to_pascal_case())
+}
+
+/// respects identifier rules, such as, an identifier must not start with a numeric char
+fn safe_identifier_name(name: String) -> String {
+    if name.starts_with(|c: char| c.is_numeric()) {
+        format!("_{}", name)
+    } else {
+        name
+    }
+}
+
+/// Expands an identifier as snakecase and preserve any leading or trailing underscores
+pub fn safe_snake_case_ident(name: &str) -> Ident {
+    let i = name.to_snake_case();
+    ident(&preserve_underscore_delim(&i, name))
+}
+
+/// Expands an identifier as pascal case and preserve any leading or trailing underscores
+pub fn safe_pascal_case_ident(name: &str) -> Ident {
+    let i = name.to_pascal_case();
+    ident(&preserve_underscore_delim(&i, name))
+}
+
+/// Reapplies leading and trailing underscore chars to the ident
+/// Example `ident = "pascalCase"; alias = __pascalcase__` -> `__pascalCase__`
+pub fn preserve_underscore_delim(ident: &str, alias: &str) -> String {
+    alias
+        .chars()
+        .take_while(|c| *c == '_')
+        .chain(ident.chars())
+        .chain(alias.chars().rev().take_while(|c| *c == '_'))
+        .collect()
 }
 
 /// Expands a positional identifier string that may be empty.
@@ -127,21 +95,101 @@ where
     S: AsRef<str>,
 {
     let address_str = address_str.as_ref();
-    if !address_str.starts_with("0x") {
-        return Err(anyhow!("address must start with '0x'"));
-    }
+    eyre::ensure!(address_str.starts_with("0x"), "address must start with '0x'");
     Ok(address_str[2..].parse()?)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 /// Perform an HTTP GET request and return the contents of the response.
-pub fn http_get(url: &str) -> Result<String> {
-    Ok(reqwest::blocking::get(url)?.text()?)
+#[cfg(not(target_arch = "wasm32"))]
+pub fn http_get(_url: &str) -> Result<String> {
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "reqwest")]{
+            Ok(reqwest::blocking::get(_url)?.text()?)
+        } else {
+            eyre::bail!("HTTP is unsupported")
+        }
+    }
+}
+
+/// Replaces any occurrences of env vars in the `raw` str with their value
+pub fn resolve_path(raw: &str) -> Result<PathBuf> {
+    let mut unprocessed = raw;
+    let mut resolved = String::new();
+
+    while let Some(dollar_sign) = unprocessed.find('$') {
+        let (head, tail) = unprocessed.split_at(dollar_sign);
+        resolved.push_str(head);
+
+        match parse_identifier(&tail[1..]) {
+            Some((variable, rest)) => {
+                let value = std::env::var(variable)?;
+                resolved.push_str(&value);
+                unprocessed = rest;
+            }
+            None => {
+                eyre::bail!("Unable to parse a variable from \"{}\"", tail)
+            }
+        }
+    }
+    resolved.push_str(unprocessed);
+
+    Ok(PathBuf::from(resolved))
+}
+
+fn parse_identifier(text: &str) -> Option<(&str, &str)> {
+    let mut calls = 0;
+
+    let (head, tail) = take_while(text, |c| {
+        calls += 1;
+        match c {
+            '_' => true,
+            letter if letter.is_ascii_alphabetic() => true,
+            digit if digit.is_ascii_digit() && calls > 1 => true,
+            _ => false,
+        }
+    });
+
+    if head.is_empty() {
+        None
+    } else {
+        Some((head, tail))
+    }
+}
+
+fn take_while(s: &str, mut predicate: impl FnMut(char) -> bool) -> (&str, &str) {
+    let mut index = 0;
+    for c in s.chars() {
+        if predicate(c) {
+            index += c.len_utf8();
+        } else {
+            break
+        }
+    }
+    s.split_at(index)
+}
+
+/// Returns a list of absolute paths to all the json files under the root
+pub fn json_files(root: impl AsRef<std::path::Path>) -> Vec<PathBuf> {
+    walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or_default())
+        .map(|e| e.path().into())
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn can_resolve_path() {
+        let raw = "./$ENV_VAR";
+        std::env::set_var("ENV_VAR", "file.txt");
+        let resolved = resolve_path(raw).unwrap();
+        assert_eq!(resolved.to_str().unwrap(), "./file.txt");
+    }
 
     #[test]
     fn input_name_to_ident_empty() {
@@ -160,26 +208,24 @@ mod tests {
 
     #[test]
     fn parse_address_missing_prefix() {
-        if parse_address("0000000000000000000000000000000000000000").is_ok() {
-            panic!("parsing address not starting with 0x should fail");
-        }
+        assert!(
+            parse_address("0000000000000000000000000000000000000000").is_err(),
+            "parsing address not starting with 0x should fail"
+        );
     }
 
     #[test]
     fn parse_address_address_too_short() {
-        if parse_address("0x00000000000000").is_ok() {
-            panic!("parsing address not starting with 0x should fail");
-        }
+        assert!(
+            parse_address("0x00000000000000").is_err(),
+            "parsing address not starting with 0x should fail"
+        );
     }
 
     #[test]
     fn parse_address_ok() {
-        let expected = Address::from([
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-        ]);
-        assert_eq!(
-            parse_address("0x000102030405060708090a0b0c0d0e0f10111213").unwrap(),
-            expected
-        );
+        let expected =
+            Address::from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+        assert_eq!(parse_address("0x000102030405060708090a0b0c0d0e0f10111213").unwrap(), expected);
     }
 }

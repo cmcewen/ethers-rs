@@ -1,7 +1,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 #[cfg(not(feature = "celo"))]
 mod tests {
-    use ethers_core::{rand::thread_rng, types::TransactionRequest, utils::Ganache};
+    use ethers_core::{rand::thread_rng, types::TransactionRequest, utils::Anvil};
     use ethers_middleware::{
         gas_escalator::{Frequency, GasEscalatorMiddleware, GeometricGasPrice},
         gas_oracle::{EthGasStation, GasCategory, GasOracleMiddleware},
@@ -52,13 +52,13 @@ mod tests {
 
     #[tokio::test]
     async fn can_stack_middlewares() {
-        let ganache = Ganache::new().block_time(5u64).spawn();
+        let anvil = Anvil::new().block_time(5u64).spawn();
         let gas_oracle = EthGasStation::new(None).category(GasCategory::SafeLow);
-        let signer: LocalWallet = ganache.keys()[0].clone().into();
+        let signer: LocalWallet = anvil.keys()[0].clone().into();
         let address = signer.address();
 
         // the base provider
-        let provider = Arc::new(Provider::<Http>::try_from(ganache.endpoint()).unwrap());
+        let provider = Arc::new(Provider::<Http>::try_from(anvil.endpoint()).unwrap());
         let chain_id = provider.get_chainid().await.unwrap().as_u64();
         let signer = signer.with_chain_id(chain_id);
 
@@ -84,12 +84,7 @@ mod tests {
         for _ in 0..10 {
             let pending = provider.send_transaction(tx.clone(), None).await.unwrap();
             let hash = *pending;
-            let gas_price = provider
-                .get_transaction(hash)
-                .await
-                .unwrap()
-                .unwrap()
-                .gas_price;
+            let gas_price = provider.get_transaction(hash).await.unwrap().unwrap().gas_price;
             dbg!(gas_price);
             pending_txs.push(pending);
         }

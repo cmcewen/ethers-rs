@@ -1,3 +1,6 @@
+mod blocknative;
+pub use blocknative::BlockNative;
+
 mod eth_gas_station;
 pub use eth_gas_station::EthGasStation;
 
@@ -9,6 +12,15 @@ pub use etherscan::Etherscan;
 
 mod middleware;
 pub use middleware::{GasOracleMiddleware, MiddlewareError};
+
+mod median;
+pub use median::Median;
+
+mod cache;
+pub use cache::Cache;
+
+mod polygon;
+pub use polygon::Polygon;
 
 use ethers_core::types::U256;
 
@@ -35,6 +47,19 @@ pub enum GasOracleError {
     #[error(transparent)]
     HttpClientError(#[from] ReqwestError),
 
+    /// An error decoding JSON response from gas oracle
+    #[error(transparent)]
+    SerdeJsonError(#[from] serde_json::Error),
+
+    /// An error with oracle response type
+    #[error("invalid oracle response")]
+    InvalidResponse,
+
+    /// An internal error in the Etherscan client request made from the underlying
+    /// gas oracle
+    #[error(transparent)]
+    EtherscanError(#[from] ethers_etherscan::errors::EtherscanError),
+
     /// An internal error thrown when the required gas category is not
     /// supported by the gas oracle API
     #[error("gas category not supported")]
@@ -42,6 +67,12 @@ pub enum GasOracleError {
 
     #[error("EIP-1559 gas estimation not supported")]
     Eip1559EstimationNotSupported,
+
+    #[error("None of the oracles returned a value")]
+    NoValues,
+
+    #[error("Chain is not supported by the oracle")]
+    UnsupportedChain,
 }
 
 /// `GasOracle` is a trait that an underlying gas oracle needs to implement.

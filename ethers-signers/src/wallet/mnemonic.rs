@@ -16,7 +16,7 @@ use thiserror::Error;
 const DEFAULT_DERIVATION_PATH_PREFIX: &str = "m/44'/60'/0'/0/";
 
 /// Represents a structure that can resolve into a `Wallet<SigningKey>`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MnemonicBuilder<W: Wordlist> {
     /// The mnemonic phrase can be supplied to the builder as a string or a path to the file whose
     /// contents are the phrase. A builder that has a valid phrase should `build` the wallet.
@@ -82,6 +82,7 @@ impl<W: Wordlist> MnemonicBuilder<W> {
     /// # Ok(())
     /// # }
     /// ```
+    #[must_use]
     pub fn phrase<P: Into<PathOrString>>(mut self, phrase: P) -> Self {
         self.phrase = Some(phrase.into());
         self
@@ -104,6 +105,7 @@ impl<W: Wordlist> MnemonicBuilder<W> {
     /// # Ok(())
     /// # }
     /// ```
+    #[must_use]
     pub fn word_count(mut self, count: usize) -> Self {
         self.word_count = count;
         self
@@ -127,6 +129,7 @@ impl<W: Wordlist> MnemonicBuilder<W> {
     }
 
     /// Sets the password used to construct the seed from the mnemonic phrase.
+    #[must_use]
     pub fn password(mut self, password: &str) -> Self {
         self.password = Some(password.to_string());
         self
@@ -134,6 +137,7 @@ impl<W: Wordlist> MnemonicBuilder<W> {
 
     /// Sets the path to which the randomly generated phrase will be written to. This field is
     /// ignored when building a wallet from the provided mnemonic phrase.
+    #[must_use]
     pub fn write_to<P: Into<PathBuf>>(mut self, path: P) -> Self {
         self.write_to = Some(path.into());
         self
@@ -176,15 +180,11 @@ impl<W: Wordlist> MnemonicBuilder<W> {
     ) -> Result<Wallet<SigningKey>, WalletError> {
         let derived_priv_key =
             mnemonic.derive_key(&self.derivation_path, self.password.as_deref())?;
-        let key: &SigningKey = derived_priv_key.as_ref();
+        let key: &coins_bip32::prelude::SigningKey = derived_priv_key.as_ref();
         let signer = SigningKey::from_bytes(&key.to_bytes())?;
         let address = secret_key_to_address(&signer);
 
-        Ok(Wallet::<SigningKey> {
-            signer,
-            address,
-            chain_id: 1,
-        })
+        Ok(Wallet::<SigningKey> { signer, address, chain_id: 1 })
     }
 }
 
@@ -227,26 +227,24 @@ mod tests {
                 "0xFB78b25f69A8e941036fEE2A5EeAf349D81D4ccc",
             ),
         ];
-        TESTCASES
-            .iter()
-            .for_each(|(phrase, index, password, expected_addr)| {
-                let wallet = match password {
-                    Some(psswd) => MnemonicBuilder::<English>::default()
-                        .phrase(*phrase)
-                        .index(*index)
-                        .unwrap()
-                        .password(psswd)
-                        .build()
-                        .unwrap(),
-                    None => MnemonicBuilder::<English>::default()
-                        .phrase(*phrase)
-                        .index(*index)
-                        .unwrap()
-                        .build()
-                        .unwrap(),
-                };
-                assert_eq!(&to_checksum(&wallet.address, None), expected_addr);
-            })
+        TESTCASES.iter().for_each(|(phrase, index, password, expected_addr)| {
+            let wallet = match password {
+                Some(psswd) => MnemonicBuilder::<English>::default()
+                    .phrase(*phrase)
+                    .index(*index)
+                    .unwrap()
+                    .password(psswd)
+                    .build()
+                    .unwrap(),
+                None => MnemonicBuilder::<English>::default()
+                    .phrase(*phrase)
+                    .index(*index)
+                    .unwrap()
+                    .build()
+                    .unwrap(),
+            };
+            assert_eq!(&to_checksum(&wallet.address, None), expected_addr);
+        })
     }
 
     #[tokio::test]

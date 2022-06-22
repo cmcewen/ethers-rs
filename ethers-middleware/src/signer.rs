@@ -1,5 +1,6 @@
 use ethers_core::types::{
-    transaction::eip2718::TypedTransaction, Address, BlockId, Bytes, Signature,
+    transaction::{eip2718::TypedTransaction, eip2930::AccessListWithGasUsed},
+    Address, BlockId, Bytes, Signature, U256,
 };
 use ethers_providers::{maybe, FromErr, Middleware, PendingTransaction};
 use ethers_signers::Signer;
@@ -56,10 +57,9 @@ use thiserror::Error;
 ///
 /// # Ok(())
 /// # }
-///
 /// ```
 ///
-/// [`Provider`]: ethers_providers::Provider
+/// [`Signer`]: ethers_signers::Signer
 pub struct SignerMiddleware<M, S> {
     pub(crate) inner: M,
     pub(crate) signer: S,
@@ -95,6 +95,9 @@ pub enum SignerMiddlewareError<M: Middleware, S: Signer> {
     /// Thrown if a signature is requested from a different address
     #[error("specified from address is not signer")]
     WrongSigner,
+    /// Thrown if the signer's chain_id is different than the chain_id of the transaction
+    #[error("specified chain_id is different than the signer's chain_id")]
+    DifferentChainID,
 }
 
 // Helper functions for locally signing transactions
@@ -104,28 +107,45 @@ where
     S: Signer,
 {
     /// Creates a new client from the provider and signer.
+    /// Sets the address of this middleware to the address of the signer.
+    /// The chain_id of the signer will not be set to the chain id of the provider. If the signer
+    /// passed here is initialized with a different chain id, then the client may throw errors, or
+    /// methods like `sign_transaction` may error.
+    /// To automatically set the signer's chain id, see `new_with_provider_chain`.
+    ///
+    /// [`Middleware`] ethers_providers::Middleware
+    /// [`Signer`] ethers_signers::Signer
     pub fn new(inner: M, signer: S) -> Self {
         let address = signer.address();
-        SignerMiddleware {
-            inner,
-            signer,
-            address,
-        }
+        SignerMiddleware { inner, signer, address }
     }
 
-    /// Signs and returns the RLP encoding of the signed transaction
+    /// Signs and returns the RLP encoding of the signed transaction.
+    /// If the transaction does not have a chain id set, it sets it to the signer's chain id.
+    /// Returns an error if the transaction's existing chain id does not match the signer's chain
+    /// id.
     async fn sign_transaction(
         &self,
-        tx: TypedTransaction,
+        mut tx: TypedTransaction,
     ) -> Result<Bytes, SignerMiddlewareError<M, S>> {
-        let signature = self
-            .signer
-            .sign_transaction(&tx)
-            .await
-            .map_err(SignerMiddlewareError::SignerError)?;
+        // compare chain_id and use signer's chain_id if the tranasaction's chain_id is None,
+        // return an error if they are not consistent
+        let chain_id = self.signer.chain_id();
+        match tx.chain_id() {
+            Some(id) if id.as_u64() != chain_id => {
+                return Err(SignerMiddlewareError::DifferentChainID)
+            }
+            None => {
+                tx.set_chain_id(chain_id);
+            }
+            _ => {}
+        }
+
+        let signature =
+            self.signer.sign_transaction(&tx).await.map_err(SignerMiddlewareError::SignerError)?;
 
         // Return the raw rlp-encoded signed transaction
-        Ok(tx.rlp_signed(self.signer.chain_id(), &signature))
+        Ok(tx.rlp_signed(&signature))
     }
 
     /// Returns the client's address
@@ -138,6 +158,8 @@ where
         &self.signer
     }
 
+    /// Builds a SignerMiddleware with the given Signer.
+    #[must_use]
     pub fn with_signer(&self, signer: S) -> Self
     where
         S: Clone,
@@ -147,6 +169,32 @@ where
         this.address = signer.address();
         this.signer = signer;
         this
+    }
+
+    /// Creates a new client from the provider and signer.
+    /// Sets the address of this middleware to the address of the signer.
+    /// Sets the chain id of the signer to the chain id of the inner [`Middleware`] passed in,
+    /// using the [`Signer`]'s implementation of with_chain_id.
+    ///
+    /// [`Middleware`] ethers_providers::Middleware
+    /// [`Signer`] ethers_signers::Signer
+    pub async fn new_with_provider_chain(
+        inner: M,
+        signer: S,
+    ) -> Result<Self, SignerMiddlewareError<M, S>> {
+        let address = signer.address();
+        let chain_id =
+            inner.get_chainid().await.map_err(|e| SignerMiddlewareError::MiddlewareError(e))?;
+        let signer = signer.with_chain_id(chain_id.as_u64());
+        Ok(SignerMiddleware { inner, signer, address })
+    }
+
+    fn set_tx_from_if_none(&self, tx: &TypedTransaction) -> TypedTransaction {
+        let mut tx = tx.clone();
+        if tx.from().is_none() {
+            tx.set_from(self.address);
+        }
+        tx
     }
 }
 
@@ -175,6 +223,14 @@ where
         true
     }
 
+    async fn sign_transaction(
+        &self,
+        tx: &TypedTransaction,
+        _: Address,
+    ) -> Result<Signature, Self::Error> {
+        Ok(self.signer.sign_transaction(tx).await.map_err(SignerMiddlewareError::SignerError)?)
+    }
+
     /// Helper for filling a transaction's nonce using the wallet
     async fn fill_transaction(
         &self,
@@ -188,6 +244,12 @@ where
             self.address
         };
         tx.set_from(from);
+
+        // get the signer's chain_id if the transaction does not set it
+        let chain_id = self.signer.chain_id();
+        if tx.chain_id().is_none() {
+            tx.set_chain_id(chain_id);
+        }
 
         let nonce = maybe(tx.nonce().cloned(), self.get_transaction_count(from, block)).await?;
         tx.set_nonce(nonce);
@@ -217,7 +279,7 @@ where
                 .inner
                 .send_transaction(tx, block)
                 .await
-                .map_err(SignerMiddlewareError::MiddlewareError);
+                .map_err(SignerMiddlewareError::MiddlewareError)
         }
 
         // if we have a nonce manager set, we should try handling the result in
@@ -238,10 +300,33 @@ where
         data: T,
         _: &Address,
     ) -> Result<Signature, Self::Error> {
-        self.signer
-            .sign_message(data.into())
+        self.signer.sign_message(data.into()).await.map_err(SignerMiddlewareError::SignerError)
+    }
+
+    async fn estimate_gas(&self, tx: &TypedTransaction) -> Result<U256, Self::Error> {
+        let tx = self.set_tx_from_if_none(tx);
+        self.inner.estimate_gas(&tx).await.map_err(SignerMiddlewareError::MiddlewareError)
+    }
+
+    async fn create_access_list(
+        &self,
+        tx: &TypedTransaction,
+        block: Option<BlockId>,
+    ) -> Result<AccessListWithGasUsed, Self::Error> {
+        let tx = self.set_tx_from_if_none(tx);
+        self.inner
+            .create_access_list(&tx, block)
             .await
-            .map_err(SignerMiddlewareError::SignerError)
+            .map_err(SignerMiddlewareError::MiddlewareError)
+    }
+
+    async fn call(
+        &self,
+        tx: &TypedTransaction,
+        block: Option<BlockId>,
+    ) -> Result<Bytes, Self::Error> {
+        let tx = self.set_tx_from_if_none(tx);
+        self.inner().call(&tx, block).await.map_err(SignerMiddlewareError::MiddlewareError)
     }
 }
 
@@ -250,7 +335,7 @@ mod tests {
     use super::*;
     use ethers_core::{
         types::TransactionRequest,
-        utils::{self, keccak256, Ganache},
+        utils::{self, keccak256, Anvil},
     };
     use ethers_providers::Provider;
     use ethers_signers::LocalWallet;
@@ -262,22 +347,22 @@ mod tests {
         // https://web3js.readthedocs.io/en/v1.2.0/web3-eth-accounts.html#eth-accounts-signtransaction
         let tx = TransactionRequest {
             from: None,
-            to: Some(
-                "F0109fC8DF283027b6285cc889F5aA624EaC1F55"
-                    .parse::<Address>()
-                    .unwrap()
-                    .into(),
-            ),
+            to: Some("F0109fC8DF283027b6285cc889F5aA624EaC1F55".parse::<Address>().unwrap().into()),
             value: Some(1_000_000_000.into()),
             gas: Some(2_000_000.into()),
             nonce: Some(0.into()),
             gas_price: Some(21_000_000_000u128.into()),
             data: None,
+            chain_id: None,
         }
         .into();
         let chain_id = 1u64;
 
-        let provider = Provider::try_from("http://localhost:8545").unwrap();
+        // Signer middlewares now rely on a working provider which it can query the chain id from,
+        // so we make sure Anvil is started with the chain id that the expected tx was signed
+        // with
+        let anvil = Anvil::new().args(vec!["--chain-id".to_string(), chain_id.to_string()]).spawn();
+        let provider = Provider::try_from(anvil.endpoint()).unwrap();
         let key = "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
             .parse::<LocalWallet>()
             .unwrap()
@@ -297,10 +382,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signs_tx_none_chainid() {
+        // retrieved test vector from:
+        // https://web3js.readthedocs.io/en/v1.2.0/web3-eth-accounts.html#eth-accounts-signtransaction
+        // the signature is different because we're testing signer middleware handling the None
+        // case for a non-mainnet chain id
+        let tx = TransactionRequest {
+            from: None,
+            to: Some("F0109fC8DF283027b6285cc889F5aA624EaC1F55".parse::<Address>().unwrap().into()),
+            value: Some(1_000_000_000.into()),
+            gas: Some(2_000_000.into()),
+            nonce: Some(U256::zero()),
+            gas_price: Some(21_000_000_000u128.into()),
+            data: None,
+            chain_id: None,
+        }
+        .into();
+        let chain_id = 1337u64;
+
+        // Signer middlewares now rely on a working provider which it can query the chain id from,
+        // so we make sure Anvil is started with the chain id that the expected tx was signed
+        // with
+        let anvil = Anvil::new().args(vec!["--chain-id".to_string(), chain_id.to_string()]).spawn();
+        let provider = Provider::try_from(anvil.endpoint()).unwrap();
+        let key = "4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318"
+            .parse::<LocalWallet>()
+            .unwrap()
+            .with_chain_id(chain_id);
+        let client = SignerMiddleware::new(provider, key);
+
+        let tx = client.sign_transaction(tx).await.unwrap();
+
+        let expected_rlp = Bytes::from(hex::decode("f86b808504e3b29200831e848094f0109fc8df283027b6285cc889f5aa624eac1f55843b9aca0080820a95a08290324bae25ca0490077e0d1f4098730333088f6a500793fa420243f35c6b23a06aca42876cd28fdf614a4641e64222fee586391bb3f4061ed5dfefac006be850").unwrap());
+        assert_eq!(tx.clone(), expected_rlp);
+    }
+
+    #[tokio::test]
+    async fn anvil_consistent_chainid() {
+        let anvil = Anvil::new().spawn();
+        let provider = Provider::try_from(anvil.endpoint()).unwrap();
+        let chain_id = provider.get_chainid().await.unwrap();
+        assert_eq!(chain_id, U256::from(31337));
+
+        // Intentionally do not set the chain id here so we ensure that the signer pulls the
+        // provider's chain id.
+        let key = LocalWallet::new(&mut rand::thread_rng());
+
+        // combine the provider and wallet and test that the chain id is the same for both the
+        // signer returned by the middleware and through the middleware itself.
+        let client = SignerMiddleware::new_with_provider_chain(provider, key).await.unwrap();
+        let middleware_chainid = client.get_chainid().await.unwrap();
+        assert_eq!(chain_id, middleware_chainid);
+
+        let signer = client.signer();
+        let signer_chainid = signer.chain_id();
+        assert_eq!(chain_id.as_u64(), signer_chainid);
+    }
+
+    #[tokio::test]
+    async fn anvil_consistent_chainid_not_default() {
+        let anvil = Anvil::new().args(vec!["--chain-id", "13371337"]).spawn();
+        let provider = Provider::try_from(anvil.endpoint()).unwrap();
+        let chain_id = provider.get_chainid().await.unwrap();
+        assert_eq!(chain_id, U256::from(13371337));
+
+        // Intentionally do not set the chain id here so we ensure that the signer pulls the
+        // provider's chain id.
+        let key = LocalWallet::new(&mut rand::thread_rng());
+
+        // combine the provider and wallet and test that the chain id is the same for both the
+        // signer returned by the middleware and through the middleware itself.
+        let client = SignerMiddleware::new_with_provider_chain(provider, key).await.unwrap();
+        let middleware_chainid = client.get_chainid().await.unwrap();
+        assert_eq!(chain_id, middleware_chainid);
+
+        let signer = client.signer();
+        let signer_chainid = signer.chain_id();
+        assert_eq!(chain_id.as_u64(), signer_chainid);
+    }
+
+    #[tokio::test]
     async fn handles_tx_from_field() {
-        let ganache = Ganache::new().spawn();
-        let acc = ganache.addresses()[0];
-        let provider = Provider::try_from(ganache.endpoint()).unwrap();
+        let anvil = Anvil::new().spawn();
+        let acc = anvil.addresses()[0];
+        let provider = Provider::try_from(anvil.endpoint()).unwrap();
         let key = LocalWallet::new(&mut rand::thread_rng()).with_chain_id(1u32);
         provider
             .send_transaction(
@@ -309,37 +474,28 @@ mod tests {
             )
             .await
             .unwrap();
-        let client = SignerMiddleware::new(provider, key);
+        let client = SignerMiddleware::new_with_provider_chain(provider, key).await.unwrap();
 
         let request = TransactionRequest::new();
 
         // signing a TransactionRequest with a from field of None should yield
         // a signed transaction from the signer address
         let request_from_none = request.clone();
-        let hash = *client
-            .send_transaction(request_from_none, None)
-            .await
-            .unwrap();
+        let hash = *client.send_transaction(request_from_none, None).await.unwrap();
         let tx = client.get_transaction(hash).await.unwrap().unwrap();
         assert_eq!(tx.from, client.address());
 
         // signing a TransactionRequest with the signer as the from address
         // should yield a signed transaction from the signer
         let request_from_signer = request.clone().from(client.address());
-        let hash = *client
-            .send_transaction(request_from_signer, None)
-            .await
-            .unwrap();
+        let hash = *client.send_transaction(request_from_signer, None).await.unwrap();
         let tx = client.get_transaction(hash).await.unwrap().unwrap();
         assert_eq!(tx.from, client.address());
 
         // signing a TransactionRequest with a from address that is not the
-        // signer should result in the default ganache account being used
+        // signer should result in the default anvil account being used
         let request_from_other = request.from(acc);
-        let hash = *client
-            .send_transaction(request_from_other, None)
-            .await
-            .unwrap();
+        let hash = *client.send_transaction(request_from_other, None).await.unwrap();
         let tx = client.get_transaction(hash).await.unwrap().unwrap();
         assert_eq!(tx.from, acc);
     }

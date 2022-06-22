@@ -7,44 +7,23 @@ mod eth_tests {
     use super::*;
     use ethers_core::{
         types::{Address, BlockId, TransactionRequest, H256},
-        utils::Ganache,
+        utils::Anvil,
     };
+    use ethers_providers::RINKEBY;
 
     #[tokio::test]
     async fn non_existing_data_works() {
-        let provider = Provider::<Http>::try_from(
-            "https://rinkeby.infura.io/v3/c60b0bb42f8a4c6481ecd229eddaca27",
-        )
-        .unwrap();
+        let provider = RINKEBY.provider();
 
-        assert!(provider
-            .get_transaction(H256::zero())
-            .await
-            .unwrap()
-            .is_none());
-        assert!(provider
-            .get_transaction_receipt(H256::zero())
-            .await
-            .unwrap()
-            .is_none());
-        assert!(provider
-            .get_block(BlockId::Hash(H256::zero()))
-            .await
-            .unwrap()
-            .is_none());
-        assert!(provider
-            .get_block_with_txs(BlockId::Hash(H256::zero()))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(provider.get_transaction(H256::zero()).await.unwrap().is_none());
+        assert!(provider.get_transaction_receipt(H256::zero()).await.unwrap().is_none());
+        assert!(provider.get_block(BlockId::Hash(H256::zero())).await.unwrap().is_none());
+        assert!(provider.get_block_with_txs(BlockId::Hash(H256::zero())).await.unwrap().is_none());
     }
 
     #[tokio::test]
     async fn client_version() {
-        let provider = Provider::<Http>::try_from(
-            "https://rinkeby.infura.io/v3/c60b0bb42f8a4c6481ecd229eddaca27",
-        )
-        .unwrap();
+        let provider = RINKEBY.provider();
 
         // e.g., Geth/v1.10.6-omnibus-1af33248/linux-amd64/go1.16.6
         assert!(provider
@@ -57,11 +36,7 @@ mod eth_tests {
     // Without TLS this would error with "TLS Support not compiled in"
     #[tokio::test]
     async fn ssl_websocket() {
-        use ethers_providers::Ws;
-        let ws = Ws::connect("wss://rinkeby.infura.io/ws/v3/c60b0bb42f8a4c6481ecd229eddaca27")
-            .await
-            .unwrap();
-        let provider = Provider::new(ws);
+        let provider = RINKEBY.ws().await;
         let _number = provider.get_block_number().await.unwrap();
     }
 
@@ -70,10 +45,8 @@ mod eth_tests {
         use ethers_core::types::H256;
         use ethers_providers::{StreamExt, Ws};
 
-        let ganache = Ganache::new().block_time(2u64).spawn();
-        let (ws, _) = tokio_tungstenite::connect_async(ganache.ws_endpoint())
-            .await
-            .unwrap();
+        let anvil = Anvil::new().block_time(2u64).spawn();
+        let (ws, _) = tokio_tungstenite::connect_async(anvil.ws_endpoint()).await.unwrap();
         let provider = Provider::new(Ws::new(ws)).interval(Duration::from_millis(500u64));
 
         let stream = provider.watch_blocks().await.unwrap().stream();
@@ -83,9 +56,9 @@ mod eth_tests {
     }
 
     #[tokio::test]
-    async fn pending_txs_with_confirmations_ganache() {
-        let ganache = Ganache::new().block_time(2u64).spawn();
-        let provider = Provider::<Http>::try_from(ganache.endpoint())
+    async fn pending_txs_with_confirmations_anvil() {
+        let anvil = Anvil::new().block_time(2u64).spawn();
+        let provider = Provider::<Http>::try_from(anvil.endpoint())
             .unwrap()
             .interval(Duration::from_millis(500u64));
         let accounts = provider.get_accounts().await.unwrap();
@@ -93,10 +66,10 @@ mod eth_tests {
     }
 
     #[tokio::test]
-    async fn websocket_pending_txs_with_confirmations_ganache() {
+    async fn websocket_pending_txs_with_confirmations_anvil() {
         use ethers_providers::Ws;
-        let ganache = Ganache::new().block_time(2u64).spawn();
-        let ws = Ws::connect(ganache.ws_endpoint()).await.unwrap();
+        let anvil = Anvil::new().block_time(2u64).spawn();
+        let ws = Ws::connect(anvil.ws_endpoint()).await.unwrap();
         let provider = Provider::new(ws);
         let accounts = provider.get_accounts().await.unwrap();
         generic_pending_txs_test(provider, accounts[0]).await;
@@ -113,10 +86,7 @@ mod eth_tests {
 
     #[tokio::test]
     async fn eip1559_fee_estimation() {
-        let provider = Provider::<Http>::try_from(
-            "https://mainnet.infura.io/v3/c60b0bb42f8a4c6481ecd229eddaca27",
-        )
-        .unwrap();
+        let provider = ethers_providers::MAINNET.provider();
 
         let (_max_fee_per_gas, _max_priority_fee_per_gas) =
             provider.estimate_eip1559_fees(None).await.unwrap();
@@ -128,22 +98,6 @@ mod celo_tests {
     use super::*;
     use ethers_core::types::{Randomness, H256};
     use futures_util::stream::StreamExt;
-
-    #[tokio::test]
-    // https://alfajores-blockscout.celo-testnet.org/tx/0x544ea96cddb16aeeaedaf90885c1e02be4905f3eb43d6db3f28cac4dbe76a625/internal_transactions
-    async fn get_transaction() {
-        let provider =
-            Provider::<Http>::try_from("https://alfajores-forno.celo-testnet.org").unwrap();
-
-        let tx_hash = "c8496681d0ade783322980cce00c89419fce4b484635d9e09c79787a0f75d450"
-            .parse::<H256>()
-            .unwrap();
-        let tx = provider.get_transaction(tx_hash).await.unwrap().unwrap();
-        assert!(tx.gateway_fee_recipient.is_none());
-        assert_eq!(tx.gateway_fee.unwrap(), 0.into());
-        assert_eq!(tx.hash, tx_hash);
-        assert_eq!(tx.block_number.unwrap(), 447181.into())
-    }
 
     #[tokio::test]
     async fn get_block() {
